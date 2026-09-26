@@ -90,7 +90,7 @@ export default function PreparedReportView({
   };
 
   const exportExcel = () => {
-    exportPreparedExcel(p, p.paramsUsed.taproot ? "taproot" : "non-taproot");
+    void exportPreparedExcel(p, p.paramsUsed.taproot ? "taproot" : "non-taproot");
   };
 
   return (

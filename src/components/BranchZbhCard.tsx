@@ -1,5 +1,4 @@
 import { useRef, useState } from "react";
-import * as XLSX from "xlsx";
 import { useBranchZbhMapping } from "../useBranchZbhMapping";
 import { FILE_ACCEPT, getExtension } from "../fileUtils";
 import type { BranchZbhMapping } from "../types";
@@ -65,6 +64,8 @@ export default function BranchZbhCard() {
     }
     try {
       const buf = await file.arrayBuffer();
+      // Heavy library loaded on demand — keeps the initial bundle small.
+      const XLSX = await import("xlsx");
       const wb = XLSX.read(buf, { type: "array" });
       const ws = wb.Sheets[wb.SheetNames[0]];
       const matrix = XLSX.utils.sheet_to_json<unknown[]>(ws, {
@@ -111,7 +112,8 @@ export default function BranchZbhCard() {
     }
   };
 
-  const downloadTemplate = () => {
+  const downloadTemplate = async () => {
+    const XLSX = await import("xlsx");
     const ws = XLSX.utils.aoa_to_sheet([
       ["Zone", "Branch (SAP)", "Branch (Eduvate)", "ZBH"],
       ["North", "OIS Dwarka Sector-19", "Dwarka 19", "ZBH-DL-01"],
@@ -191,7 +193,7 @@ export default function BranchZbhCard() {
             style={{ marginTop: 10 }}
             onClick={(e) => {
               e.stopPropagation();
-              downloadTemplate();
+              void downloadTemplate();
             }}
           >
             <GearIcon size={14} />

@@ -1,5 +1,4 @@
 import { useMemo, useRef, useState } from "react";
-import * as XLSX from "xlsx";
 import ReportParamsModal from "../components/ReportParamsModal";
 import PreparedReportView from "../components/PreparedReportView";
 import { prepareReport, type PreparedReport } from "../prepareReport";
@@ -70,6 +69,8 @@ export default function PendingGrnPage() {
 
   const parse = async (file: File) => {
     const buf = await file.arrayBuffer();
+    // Heavy library loaded on demand — keeps the initial bundle small.
+    const XLSX = await import("xlsx");
     // cellDates: properly formatted date cells arrive as real Date objects
     const wb = XLSX.read(buf, { type: "array", cellDates: true });
     const sheetName = wb.SheetNames[0];
@@ -128,8 +129,9 @@ export default function PendingGrnPage() {
     setPage(0);
   };
 
-  const exportCsv = () => {
+  const exportCsv = async () => {
     if (!report) return;
+    const XLSX = await import("xlsx");
     const ws = XLSX.utils.aoa_to_sheet([report.columns, ...report.rows.map((r) => r.cells)]);
     const csv = XLSX.utils.sheet_to_csv(ws);
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
@@ -338,7 +340,7 @@ export default function PendingGrnPage() {
                   Prepare Report
                 </button>
               ) : (
-                <button className="btn primary" onClick={exportCsv}>
+                <button className="btn primary" onClick={() => void exportCsv()}>
                   <DownloadIcon size={14} />
                   Export CSV
                 </button>

@@ -1,10 +1,10 @@
-import * as XLSX from "xlsx-js-style";
+import type * as XLSXNS from "xlsx-js-style";
 import type { PreparedReport } from "./prepareReport";
 
 const NAVY = "12325E";
 const LIGHT_BLUE = "E3ECF8";
 
-type CellStyle = XLSX.CellStyle;
+type CellStyle = XLSXNS.CellStyle;
 
 const headerStyle: CellStyle = {
   font: { bold: true, color: { rgb: "DCE8F7" }, sz: 11 },
@@ -48,21 +48,35 @@ const zebraFill: CellStyle = {
   fill: { patternType: "solid", fgColor: { rgb: "F8FAFD" } },
 };
 
+/**
+ * Lazy module ref: set on first export, reused afterwards. Using a value
+ * import at top level would pull xlsx-js-style into the initial bundle.
+ */
+type XlsxModule = typeof import("xlsx-js-style");
+let xlsxMod: XlsxModule | null = null;
+
 function styleRange(
-  ws: XLSX.WorkSheet,
+  ws: XLSXNS.WorkSheet,
   range: { s: { r: number; c: number }; e: { r: number; c: number } },
-  apply: (cell: XLSX.CellObject, r: number, c: number) => void
+  apply: (cell: XLSXNS.CellObject, r: number, c: number) => void
 ) {
   for (let r = range.s.r; r <= range.e.r; r++) {
     for (let c = range.s.c; c <= range.e.c; c++) {
-      const addr = XLSX.utils.encode_cell({ r, c });
-      const cell = (ws[addr] as XLSX.CellObject) ?? (ws[addr] = { t: "s", v: "" });
+      const mod = xlsxMod as XlsxModule; // caller loads it before styling
+      const addr = mod.utils.encode_cell({ r, c });
+      const cell = (ws[addr] as XLSXNS.CellObject) ?? (ws[addr] = { t: "s", v: "" });
       apply(cell, r, c);
     }
   }
 }
 
-export function exportPreparedExcel(prep: PreparedReport, fileLabel: string) {
+/**
+ * Export is async so the heavy xlsx-js-style library (~400 KB gzipped) is
+ * code-split and only downloaded when the user actually exports Excel.
+ */
+export async function exportPreparedExcel(prep: PreparedReport, fileLabel: string) {
+  const XLSX = await import("xlsx-js-style");
+  xlsxMod = XLSX;
   const wb = XLSX.utils.book_new();
 
   // ---------- Sheet 1: Snapshot (pivot) ----------
