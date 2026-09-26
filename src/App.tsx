@@ -1,0 +1,76 @@
+import { useState } from "react";
+import Sidebar from "./components/Sidebar";
+import HomePage from "./pages/HomePage";
+import PendingGrnPage from "./pages/PendingGrnPage";
+import SettingsPage from "./pages/SettingsPage";
+import PlaceholderPage from "./pages/PlaceholderPage";
+import { K12Logo, MenuIcon } from "./icons";
+
+const PAGE_TITLES: Record<string, string> = {
+  vendors: "Vendors",
+  shipments: "Shipments",
+  inventory: "Inventory",
+};
+
+export default function App() {
+  const [activePage, setActivePage] = useState("home");
+  const [collapsed, setCollapsed] = useState(false);
+
+  return (
+    <div className="app">
+      <header className="header">
+        <div className="header-left">
+          <button
+            className="header-menu-btn"
+            onClick={() => setCollapsed((c) => !c)}
+            title={collapsed ? "Expand menu" : "Collapse menu"}
+            aria-label="Toggle navigation"
+          >
+            <MenuIcon size={19} />
+          </button>
+          <div className="header-brand">
+            <K12Logo size={38} />
+            <div className="header-titles">
+              <span className="header-title">K12 Techno Services</span>
+              <span className="header-subtitle">Central System</span>
+            </div>
+          </div>
+        </div>
+        <div className="header-right">
+          <span className="header-date">
+            {new Date().toLocaleDateString("en-IN", {
+              weekday: "short",
+              day: "numeric",
+              month: "short",
+              year: "numeric",
+            })}
+          </span>
+          <div className="avatar" title="Logistics Ops">
+            LO
+          </div>
+        </div>
+      </header>
+      <div className="app-body">
+        <Sidebar
+          collapsed={collapsed}
+          activePage={activePage}
+          onNavigate={setActivePage}
+        />
+        <main className="main">
+          <div className="page">
+            {activePage === "home" && <HomePage onNavigate={setActivePage} />}
+            {activePage === "pending-grn" && (
+              <PendingGrnPage />
+            )}
+            {activePage === "settings" && <SettingsPage />}
+            {activePage !== "home" &&
+              activePage !== "pending-grn" &&
+              activePage !== "settings" && (
+                <PlaceholderPage title={PAGE_TITLES[activePage] ?? activePage} />
+              )}
+          </div>
+        </main>
+      </div>
+    </div>
+  );
+}
