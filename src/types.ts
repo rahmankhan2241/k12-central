@@ -38,31 +38,24 @@ export type HistoricFetchLog = {
   last_error: string | null;
 };
 
-export type HistoricTpndRow = {
+export type PaymentReportRow = {
   id: number;
-  report_date: string;
-  branch_name: string;
-  paid_date: string | null;
-  grade: string;
+  branch: string;
   enrollment_code: string;
-  permanent_status: string;
-  extra: Record<string, string> | null;
+  grade: string;
+  student_type: string;
+  first_paid_date: string;
   fetched_at: string;
 };
 
-export type HistoricStoreRow = {
-  id: number;
-  report_date: string;
-  branch: string;
-  paid_date: string | null;
-  enrollment_code: string;
-  grade: string;
-  section: string;
-  kit_name: string;
-  quantity: number;
-  amount: number;
-  total: number;
-  receipt_no: string | null;
-  extra: Record<string, string> | null;
-  fetched_at: string;
-};
+/** Case-insensitive trimmed lookup: Branch (Eduvate) -> mapping row. */
+export function findZoneByBranchEduvate(
+  mapping: BranchZbhMapping[],
+  branch: string
+): BranchZbhMapping | null {
+  const target = branch.trim().toLowerCase();
+  if (!target) return null;
+  return (
+    mapping.find((m) => (m.branchEduvate || "").trim().toLowerCase() === target) ?? null
+  );
+}

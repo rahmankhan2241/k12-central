@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import { supabase, isSupabaseConfigured } from "../supabaseClient";
+import { useBranchZbhMapping } from "../useBranchZbhMapping";
 import { useHistoricFetch } from "../useHistoricFetch";
-import { useHistoricColumns } from "../useHistoricColumns";
-import type { HistoricStoreRow, HistoricTpndRow } from "../types";
-import type { HistoricReportKey } from "../useHistoricColumns";
+import { findZoneByBranchEduvate } from "../types";
+import type { BranchZbhMapping, PaymentReportRow } from "../types";
 import {
   AlertIcon,
   CheckCircleIcon,
@@ -13,11 +13,11 @@ import {
   SearchIcon,
 } from "../icons";
 
-type TabId = HistoricReportKey;
+type TabId = "payment" | "admission";
 
 const TABS: { id: TabId; label: string }[] = [
-  { id: "tpnd_installment", label: "TPND Report" },
-  { id: "store_kit_wise", label: "Store Report - Kit Wise" },
+  { id: "payment", label: "Payment Report" },
+  { id: "admission", label: "Admission Report (coming soon)" },
 ];
 
 function fmtDateTime(iso: string | null | undefined): string {
@@ -45,30 +45,26 @@ function timeAgo(iso: string | null | undefined): string {
   return `${Math.floor(hrs / 24)} day${Math.floor(hrs / 24) === 1 ? "" : "s"} ago`;
 }
 
-function match(obj: Record<string, unknown>, q: string): boolean {
-  return Object.values(obj).some(
-    (v) => v != null && String(v).toLowerCase().includes(q)
-  );
-}
-
 export default function HistoricReportPage() {
-  const [tab, setTab] = useState<TabId>("tpnd_installment");
+  const [tab, setTab] = useState<TabId>("payment");
   const { logs, loading: logsLoading, fetching, fetchError, fetchNow } = useHistoricFetch();
-  const { columns: visibleCols, allColumns, toggleColumn, resetColumns } =
-    useHistoricColumns(tab);
+  const { rows: mapping, status: mappingStatus } = useBranchZbhMapping();
 
   const [search, setSearch] = useState("");
   const [branch, setBranch] = useState("");
-  const [status, setStatus] = useState("");
-  const [rowsTpnd, setRowsTpnd] = useState<HistoricTpndRow[]>([]);
-  const [rowsStore, setRowsStore] = useState<HistoricStoreRow[]>([]);
+  const [studentType, setStudentType] = useState("");
+  const [zoneFilter, setZoneFilter] = useState("");
+  const [rows, setRows] = useState<PaymentReportRow[]>([]);
   const [dataLoading, setDataLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [skippedBranches, setSkippedBranches] = useState<Set<string>>(new Set());
+  const [manualZone, setManualZone] = useState<Record<string, Partial<BranchZbhMapping>>>({});
 
-  const latestDate = logs[tab]?.last_report_date ?? null;
+  const log = logs["payment_report"];
 
-  // Load data rows (latest report_date per report)
+  // Load payment rows
   useEffect(() => {
+    if (tab !== "payment") return;
     let cancelled = false;
     (async () => {
       setDataLoading(true);
@@ -78,143 +74,121 @@ export default function HistoricReportPage() {
         setDataLoading(false);
         return;
       }
-      try {
-        if (tab === "tpnd_installment") {
-          let q = supabase
-            .from("historic_tpnd_rows")
-            .select("*")
-            .order("report_date", { ascending: false })
-            .limit(20000);
-          if (latestDate) q = q.eq("report_date", latestDate);
-          const { data, error } = await q;
-          if (cancelled) return;
-          if (error) throw error;
-          setRowsTpnd((data ?? []) as HistoricTpndRow[]);
-          setRowsStore([]);
-        } else {
-          let q = supabase
-            .from("historic_store_rows")
-            .select("*")
-            .order("report_date", { ascending: false })
-            .limit(20000);
-          if (latestDate) q = q.eq("report_date", latestDate);
-          const { data, error } = await q;
-          if (cancelled) return;
-          if (error) throw error;
-          setRowsStore((data ?? []) as HistoricStoreRow[]);
-          setRowsTpnd([]);
-        }
-      } catch (e) {
+      const { data, error } = await supabase
+        .from("payment_report_rows")
+        .select("*")
+        .order("first_paid_date", { ascending: true })
+        .limit(20000);
+      if (cancelled) return;
+      if (error) {
         const msg =
-          e instanceof Error
-            ? e.message
-            : typeof e === "object" && e !== null && "message" in e
-              ? String((e as { message: unknown }).message)
-              : String(e);
-        if (!cancelled) setLoadError(msg);
-      } finally {
-        if (!cancelled) setDataLoading(false);
+          typeof error === "object" && error !== null && "message" in error
+            ? String((error as { message: unknown }).message)
+            : String(error);
+        setLoadError(msg);
+      } else {
+        setRows((data ?? []) as PaymentReportRow[]);
       }
+      setDataLoading(false);
     })();
     return () => {
       cancelled = true;
     };
-  }, [tab, latestDate, logs]);
+  }, [tab, log?.last_fetched_at]);
 
-  // Distinct filter values
+  // Zone per branch (Branch (Eduvate) lookup in the Branch & ZBH Mapping)
+  const zoneByBranch = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const r of rows) {
+      if (map.has(r.branch)) continue;
+      const m = findZoneByBranchEduvate(mapping, r.branch);
+      map.set(r.branch, m ? m.zone || "(No zone)" : "");
+    }
+    // Manual additions win
+    for (const [b, vals] of Object.entries(manualZone)) {
+      if (vals.zone) map.set(b, vals.zone);
+    }
+    return map;
+  }, [rows, mapping, manualZone]);
+
+  const unmappedBranches = useMemo(() => {
+    const set = new Set<string>();
+    for (const r of rows) {
+      if (!zoneByBranch.get(r.branch) && !skippedBranches.has(r.branch)) set.add(r.branch);
+    }
+    return [...set].sort();
+  }, [rows, zoneByBranch, skippedBranches]);
+
+  const zoneOptions = useMemo(() => {
+    const set = new Set<string>();
+    for (const m of mapping) if (m.zone) set.add(m.zone);
+    return [...set].sort();
+  }, [mapping]);
+
+  const enriched = useMemo(
+    () =>
+      rows.map((r) => ({
+        ...r,
+        zone: zoneByBranch.get(r.branch) || "(Unmapped)",
+      })),
+    [rows, zoneByBranch]
+  );
+
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return enriched.filter((r) => {
+      if (branch && r.branch !== branch) return false;
+      if (studentType && r.student_type !== studentType) return false;
+      if (zoneFilter && r.zone !== zoneFilter) return false;
+      if (!q) return true;
+      return (
+        r.branch.toLowerCase().includes(q) ||
+        r.enrollment_code.toLowerCase().includes(q) ||
+        r.grade.toLowerCase().includes(q) ||
+        r.zone.toLowerCase().includes(q)
+      );
+    });
+  }, [enriched, search, branch, studentType, zoneFilter]);
+
   const branchOptions = useMemo(() => {
     const set = new Set<string>();
-    if (tab === "tpnd_installment") rowsTpnd.forEach((r) => r.branch_name && set.add(r.branch_name));
-    else rowsStore.forEach((r) => r.branch && set.add(r.branch));
+    rows.forEach((r) => r.branch && set.add(r.branch));
     return [...set].sort((a, b) => a.localeCompare(b));
-  }, [tab, rowsTpnd, rowsStore]);
-
-  const statusOptions = useMemo(() => {
-    if (tab !== "tpnd_installment") return [];
-    const set = new Set<string>();
-    rowsTpnd.forEach((r) => r.permanent_status && set.add(r.permanent_status));
-    return [...set].sort();
-  }, [tab, rowsTpnd]);
-
-  // Filtering
-  const filteredTpnd = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    return rowsTpnd.filter((r) => {
-      if (branch && r.branch_name !== branch) return false;
-      if (status && r.permanent_status.toLowerCase() !== status.toLowerCase()) return false;
-      if (!q) return true;
-      return match(
-        {
-          branch_name: r.branch_name,
-          grade: r.grade,
-          enrollment_code: r.enrollment_code,
-          permanent_status: r.permanent_status,
-          ...(visibleCols.includes("Paid Date") ? { paid_date: r.paid_date } : {}),
-        },
-        q
-      );
-    });
-  }, [rowsTpnd, search, branch, status, visibleCols]);
-
-  const filteredStore = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    return rowsStore.filter((r) => {
-      if (branch && r.branch !== branch) return false;
-      if (!q) return true;
-      return match(
-        {
-          branch: r.branch,
-          grade: r.grade,
-          enrollment_code: r.enrollment_code,
-          kit_name: r.kit_name,
-          ...(visibleCols.includes("Paid Date") ? { paid_date: r.paid_date } : {}),
-        },
-        q
-      );
-    });
-  }, [rowsStore, search, branch, visibleCols]);
-
-  const rowCount = tab === "tpnd_installment" ? filteredTpnd.length : filteredStore.length;
+  }, [rows]);
 
   const handleFetchNow = async () => {
     try {
-      await fetchNow(tab === "tpnd_installment" ? "tpnd" : "store");
+      await fetchNow("payment");
     } catch {
-      // error surfaced via fetchError
+      // surfaced via fetchError
     }
   };
 
-  const colHeader = (c: string) =>
-    tab === "tpnd_installment"
-      ? { "Branch Name": "Branch Name", "Paid Date": "Paid Date", "Grade": "Grade", "Enrollment Code": "Enrollment Code", "Permanent Status": "Permanent Status" }[c] ?? c
-      : { "Branch": "Branch", "Paid Date": "Paid Date", "Enrollment Code": "Enrollment Code", "Grade": "Grade", "Section": "Section", "Kit Name": "Kit Name", "Quantity": "Quantity", "Amount": "Amount", "Total": "Total", "Receipt No": "Receipt No" }[c] ?? c;
+  const addZoneForBranch = async (b: string) => {
+    const vals = manualZone[b] ?? {};
+    if (!vals.zone || !vals.zone.trim()) return;
+    const existing = findZoneByBranchEduvate(mapping, b);
+    const newRow: BranchZbhMapping = {
+      zone: vals.zone.trim(),
+      branchSap: existing?.branchSap ?? "",
+      branchEduvate: b,
+      zbh: vals.zbh?.trim() ?? existing?.zbh ?? "",
+    };
+    // add to saved mapping via hook setter (persists to Supabase)
+    // useBranchZbhMapping exposes setRows through the same hook used in Settings
+    setManualZone({ ...manualZone, [b]: { ...vals, zone: newRow.zone } });
+    // persist through the shared hook:
+    await persistMappingRow(newRow);
+    setSkippedBranches((s) => {
+      const next = new Set(s);
+      next.delete(b);
+      return next;
+    });
+  };
 
-  const renderCell = (c: string, row: HistoricTpndRow | HistoricStoreRow) => {
-    if (tab === "tpnd_installment") {
-      const r = row as HistoricTpndRow;
-      switch (c) {
-        case "Branch Name": return r.branch_name;
-        case "Paid Date": return r.paid_date ?? "—";
-        case "Grade": return r.grade;
-        case "Enrollment Code": return r.enrollment_code;
-        case "Permanent Status": return r.permanent_status;
-        default: return "";
-      }
-    }
-    const r = row as HistoricStoreRow;
-    switch (c) {
-      case "Branch": return r.branch;
-      case "Paid Date": return r.paid_date ?? "—";
-      case "Enrollment Code": return r.enrollment_code;
-      case "Grade": return r.grade;
-      case "Section": return r.section;
-      case "Kit Name": return r.kit_name;
-      case "Quantity": return String(r.quantity);
-      case "Amount": return r.amount.toLocaleString("en-IN");
-      case "Total": return r.total.toLocaleString("en-IN");
-      case "Receipt No": return r.receipt_no ?? "—";
-      default: return "";
-    }
+  const { setRows: setMappingRows } = useBranchZbhMapping();
+  const persistMappingRow = async (newRow: BranchZbhMapping) => {
+    setMappingRows([...mapping, newRow]);
   };
 
   return (
@@ -227,7 +201,8 @@ export default function HistoricReportPage() {
           Historic Report
         </h1>
         <p className="page-subtitle">
-          Auto-fetched daily at 8:00 AM from Eduvate. Data is stored in the K12 Central database.
+          Auto-fetched daily at 8:00 AM from Eduvate. Payment Report shows the first payment
+          per student (ERP).
         </p>
       </div>
 
@@ -237,12 +212,9 @@ export default function HistoricReportPage() {
           <button
             key={t.id}
             className={`historic-tab ${tab === t.id ? "active" : ""}`}
-            onClick={() => {
-              setTab(t.id);
-              setSearch("");
-              setBranch("");
-              setStatus("");
-            }}
+            onClick={() => setTab(t.id)}
+            disabled={t.id === "admission"}
+            title={t.id === "admission" ? "Coming soon" : undefined}
           >
             {t.label}
           </button>
@@ -252,24 +224,30 @@ export default function HistoricReportPage() {
       {/* Last-fetched banner + Fetch Now */}
       <div className="card historic-fetchbar">
         <div className="historic-fetchbar-info">
-          <span className={`fetch-dot ${logs[tab]?.last_status === "failed" ? "bad" : logs[tab]?.last_status === "ok" ? "good" : ""}`} />
+          <span
+            className={`fetch-dot ${
+              log?.last_status === "failed" ? "bad" : log?.last_status === "ok" ? "good" : ""
+            }`}
+          />
           <div>
             <div className="fetch-title">
-              {tab === "tpnd_installment" ? "TPND Report" : "Store Report - Kit Wise"}
-              {logs[tab]?.last_row_count != null && logs[tab].last_row_count > 0 && (
+              Payment Report
+              {log?.last_row_count != null && log.last_row_count > 0 && (
                 <span className="row-count" style={{ marginLeft: 10 }}>
-                  {logs[tab].last_row_count.toLocaleString("en-IN")} rows
+                  {log.last_row_count.toLocaleString("en-IN")} students
                 </span>
               )}
             </div>
             <div className="fetch-sub">
               {logsLoading
                 ? "Checking fetch history…"
-                : logs[tab]
-                  ? `Last fetched ${timeAgo(logs[tab].last_fetched_at)} (${fmtDateTime(logs[tab].last_fetched_at)})${logs[tab].last_report_date ? ` · data for ${logs[tab].last_report_date}` : ""}`
+                : log
+                  ? `Last fetched ${timeAgo(log.last_fetched_at)} (${fmtDateTime(log.last_fetched_at)})${
+                      log.last_report_date ? ` · data for ${log.last_report_date}` : ""
+                    }`
                   : "Never fetched yet — click Fetch Now to pull it from Eduvate."}
-              {logs[tab]?.last_status === "failed" && logs[tab]?.last_error && (
-                <span className="fetch-err"> · {logs[tab].last_error}</span>
+              {log?.last_status === "failed" && log?.last_error && (
+                <span className="fetch-err"> · {log.last_error}</span>
               )}
             </div>
           </div>
@@ -290,136 +268,193 @@ export default function HistoricReportPage() {
         </div>
       )}
 
-      {/* Search + filters */}
-      <div className="table-toolbar">
-        <div className="filters" style={{ flexWrap: "wrap", gap: 8 }}>
-          <div className="sidebar-search" style={{ width: 260 }}>
-            <span className="search-icon">
-              <SearchIcon size={15} />
-            </span>
-            <input
-              className="table-search"
-              style={{ paddingLeft: 32 }}
-              placeholder={
-                tab === "tpnd_installment"
-                  ? "Search ERP / Branch / Zone…"
-                  : "Search ERP / Branch / Zone / Kit Name…"
-              }
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-            />
+      {tab === "admission" ? (
+        <div className="card">
+          <div className="placeholder">
+            <div className="placeholder-icon">
+              <ClockIcon size={30} />
+            </div>
+            <h2>Admission Report — coming soon</h2>
+            <p>This report will be wired up next. The Payment Report tab is live now.</p>
           </div>
-          <select
-            className="filter-select"
-            value={branch}
-            onChange={(e) => setBranch(e.target.value)}
-            aria-label="Filter by branch"
-          >
-            <option value="">All Branches</option>
-            {branchOptions.map((b) => (
-              <option key={b} value={b}>
-                {b}
-              </option>
-            ))}
-          </select>
-          {tab === "tpnd_installment" && (
-            <select
-              className="filter-select"
-              value={status}
-              onChange={(e) => setStatus(e.target.value)}
-              aria-label="Filter by permanent status"
-            >
-              <option value="">All Statuses</option>
-              {statusOptions.map((s) => (
-                <option key={s} value={s}>
-                  {s}
-                </option>
-              ))}
-            </select>
+        </div>
+      ) : (
+        <>
+          {/* Unmapped zone card */}
+          {unmappedBranches.length > 0 && mappingStatus !== "loading" && (
+            <div className="card unmapped-card">
+              <div className="card-head">
+                <div className="card-title">
+                  <AlertIcon size={15} /> {unmappedBranches.length} branch
+                  {unmappedBranches.length === 1 ? "" : "es"} without a Zone
+                </div>
+                <span className="row-count">Zone comes from Branch (Eduvate) in Settings → Branch &amp; ZBH Mapping</span>
+              </div>
+              <div className="card-body" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                {unmappedBranches.map((b) => {
+                  const vals = manualZone[b] ?? {};
+                  return (
+                    <div className="unmapped-row" key={b}>
+                      <span className="unmapped-branch" title={b}>{b}</span>
+                      <input
+                        placeholder="Zone"
+                        value={vals.zone ?? ""}
+                        onChange={(e) =>
+                          setManualZone({ ...manualZone, [b]: { ...vals, zone: e.target.value } })
+                        }
+                      />
+                      <input
+                        placeholder="ZBH (optional)"
+                        value={vals.zbh ?? ""}
+                        onChange={(e) =>
+                          setManualZone({ ...manualZone, [b]: { ...vals, zbh: e.target.value } })
+                        }
+                      />
+                      <button className="btn primary" onClick={() => void addZoneForBranch(b)}>
+                        <CheckCircleIcon size={14} /> Add
+                      </button>
+                      <button
+                        className="btn"
+                        onClick={() =>
+                          setSkippedBranches((s) => new Set(s).add(b))
+                        }
+                      >
+                        Skip
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
           )}
-        </div>
-        <span className="row-count">
-          {dataLoading ? "Loading…" : `${rowCount.toLocaleString("en-IN")} of ${(tab === "tpnd_installment" ? rowsTpnd.length : rowsStore.length).toLocaleString("en-IN")} rows`}
-        </span>
-      </div>
 
-      {/* Column visibility chips */}
-      <div className="historic-colchips">
-        <span className="colchips-label">
-          <CheckCircleIcon size={13} /> Columns:
-        </span>
-        {allColumns.map((c) => (
-          <button
-            key={c}
-            className={`colchip ${visibleCols.includes(c) ? "on" : ""}`}
-            onClick={() => toggleColumn(c)}
-            title={visibleCols.includes(c) ? "Click to hide this column" : "Click to show this column"}
-          >
-            {c}
-          </button>
-        ))}
-        <button className="link-btn" onClick={resetColumns} style={{ marginLeft: 6 }}>
-          Reset
-        </button>
-      </div>
-
-      {loadError && (
-        <div className="upload-error">
-          <AlertIcon size={14} />
-          {loadError}
-        </div>
-      )}
-
-      {/* Data table */}
-      <div className="table-wrap historic-table">
-        <table className="data-table">
-          <thead>
-            <tr>
-              <th style={{ width: 44 }}>#</th>
-              {visibleCols.map((c) => (
-                <th key={c}>{colHeader(c)}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {dataLoading && (
-              <tr>
-                <td colSpan={visibleCols.length + 1} className="table-empty">
-                  Loading data…
-                </td>
-              </tr>
-            )}
-            {!dataLoading &&
-              (tab === "tpnd_installment" ? filteredTpnd : filteredStore)
-                .slice(0, 500)
-                .map((row, i) => (
-                  <tr key={row.id}>
-                    <td className="mapping-idx">{i + 1}</td>
-                    {visibleCols.map((c) => (
-                      <td key={c}>{renderCell(c, row)}</td>
-                    ))}
-                  </tr>
+          {/* Search + filters */}
+          <div className="table-toolbar">
+            <div className="filters" style={{ flexWrap: "wrap", gap: 8 }}>
+              <div className="sidebar-search" style={{ width: 260 }}>
+                <span className="search-icon">
+                  <SearchIcon size={15} />
+                </span>
+                <input
+                  className="table-search"
+                  style={{ paddingLeft: 32 }}
+                  placeholder="Search ERP / Branch / Grade / Zone…"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                />
+              </div>
+              <select
+                className="filter-select"
+                value={branch}
+                onChange={(e) => setBranch(e.target.value)}
+                aria-label="Filter by branch"
+              >
+                <option value="">All Branches</option>
+                {branchOptions.map((b) => (
+                  <option key={b} value={b}>
+                    {b}
+                  </option>
                 ))}
-            {!dataLoading && rowCount === 0 && (
-              <tr>
-                <td colSpan={visibleCols.length + 1} className="table-empty">
-                  No rows{search || branch || status ? " match your filters" : " — fetch the report to load data"}.
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-        {rowCount > 500 && (
-          <div className="table-more-hint">
-            Showing first 500 of {rowCount.toLocaleString("en-IN")} matching rows. Use the filters to narrow down.
+              </select>
+              <select
+                className="filter-select"
+                value={zoneFilter}
+                onChange={(e) => setZoneFilter(e.target.value)}
+                aria-label="Filter by zone"
+              >
+                <option value="">All Zones</option>
+                {zoneOptions.map((z) => (
+                  <option key={z} value={z}>
+                    {z}
+                  </option>
+                ))}
+              </select>
+              <select
+                className="filter-select"
+                value={studentType}
+                onChange={(e) => setStudentType(e.target.value)}
+                aria-label="Filter by student type"
+              >
+                <option value="">New + Old</option>
+                <option value="New">New</option>
+                <option value="Old">Old</option>
+              </select>
+            </div>
+            <span className="row-count">
+              {dataLoading
+                ? "Loading…"
+                : `${filtered.length.toLocaleString("en-IN")} of ${rows.length.toLocaleString("en-IN")} students`}
+            </span>
           </div>
-        )}
-      </div>
 
-      <div className="historic-footnote">
-        <ClockIcon size={13} />
-        Auto-fetch runs daily at 8:00 AM IST (Vercel Cron). “Fetch Now” pulls the latest data immediately.
-      </div>
+          {loadError && (
+            <div className="upload-error">
+              <AlertIcon size={14} />
+              {loadError}
+            </div>
+          )}
+
+          {/* Data table */}
+          <div className="table-wrap historic-table">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th style={{ width: 44 }}>#</th>
+                  <th>Zone</th>
+                  <th>Branch</th>
+                  <th>Enrollment Code</th>
+                  <th>Grade</th>
+                  <th>Student Type</th>
+                  <th>First Paid Date</th>
+                </tr>
+              </thead>
+              <tbody>
+                {dataLoading && (
+                  <tr>
+                    <td colSpan={7} className="table-empty">
+                      Loading data…
+                    </td>
+                  </tr>
+                )}
+                {!dataLoading &&
+                  filtered.slice(0, 500).map((r, i) => (
+                    <tr key={r.id}>
+                      <td className="mapping-idx">{i + 1}</td>
+                      <td className={r.zone === "(Unmapped)" ? "zone-unmapped" : ""}>{r.zone}</td>
+                      <td>{r.branch}</td>
+                      <td>{r.enrollment_code}</td>
+                      <td>{r.grade}</td>
+                      <td>
+                        <span className={`stype-chip ${r.student_type === "New" ? "new" : "old"}`}>
+                          {r.student_type}
+                        </span>
+                      </td>
+                      <td>{r.first_paid_date}</td>
+                    </tr>
+                  ))}
+                {!dataLoading && filtered.length === 0 && (
+                  <tr>
+                    <td colSpan={7} className="table-empty">
+                      No students found{search || branch || studentType || zoneFilter ? " match your filters" : " — fetch the report to load data"}.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+            {filtered.length > 500 && (
+              <div className="table-more-hint">
+                Showing first 500 of {filtered.length.toLocaleString("en-IN")} matching students. Use the filters to narrow down.
+              </div>
+            )}
+          </div>
+
+          <div className="historic-footnote">
+            <ClockIcon size={13} />
+            Auto-fetch daily 8:00 AM IST · one row per ERP (first payment) · taproot/PU branches
+            excluded.
+          </div>
+        </>
+      )}
     </div>
   );
 }

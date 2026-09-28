@@ -43,7 +43,7 @@ export function useHistoricFetch() {
   }, [loadLogs]);
 
   const fetchNow = useCallback(
-    async (report: "tpnd" | "store" | "all") => {
+    async (report: "payment" | "all") => {
       setFetching(true);
       setFetchError(null);
       try {
