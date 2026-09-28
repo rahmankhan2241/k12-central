@@ -79,7 +79,7 @@ export default function HistoricReportPage() {
         .from("payment_report_rows")
         .select("*")
         .order("first_paid_date", { ascending: true })
-        .limit(20000);
+        .range(0, 1999999); // fetch all — PostgREST hard-caps .limit() at 1000
       if (cancelled) return;
       if (error) {
         const msg =
