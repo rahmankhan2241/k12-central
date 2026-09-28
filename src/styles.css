@@ -2127,3 +2127,75 @@ button.sync-pill.failed:hover {
 .spin {
   animation: k12-spin 0.9s linear infinite;
 }
+
+/* Historic toolbar: row count + Export Excel on the right */
+.historic-toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-left: auto;
+}
+
+/* Export scope choice cards */
+.export-choice-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.export-choice {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 5px;
+  text-align: left;
+  padding: 14px 16px;
+  border: 1.5px solid var(--line);
+  border-radius: 12px;
+  background: #fff;
+  cursor: pointer;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
+}
+
+.export-choice:hover:not(:disabled) {
+  border-color: var(--navy-700, #12325e);
+  box-shadow: var(--shadow-sm);
+  transform: translateY(-1px);
+}
+
+.export-choice:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.export-choice-title {
+  font-weight: 700;
+  font-size: 13.5px;
+  color: var(--ink);
+}
+
+.export-choice-sub {
+  font-size: 12px;
+  color: var(--ink-soft);
+  line-height: 1.45;
+}
+
+.export-choice-tags {
+  font-size: 11px;
+  color: var(--ink-faint);
+  background: var(--blue-50, #f4f7fb);
+  border-radius: 7px;
+  padding: 3px 8px;
+  margin-top: 2px;
+}
+
+@media (max-width: 640px) {
+  .export-choice-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .historic-toolbar-right {
+    width: 100%;
+    justify-content: space-between;
+  }
+}

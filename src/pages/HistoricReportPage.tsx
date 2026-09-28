@@ -3,10 +3,14 @@ import { useBranchZbhMapping } from "../useBranchZbhMapping";
 import { useHistoricGlobal } from "../useHistoricFetch";
 import { findZoneByBranchEduvate } from "../types";
 import type { BranchZbhMapping } from "../types";
+import { exportPaymentExcel } from "../exportPaymentExcel";
+import type { PaymentExportRow } from "../exportPaymentExcel";
 import {
   AlertIcon,
   CheckCircleIcon,
   ClockIcon,
+  CloseIcon,
+  DownloadIcon,
   FileReportIcon,
   RefreshIcon,
   SearchIcon,
@@ -66,6 +70,9 @@ export default function HistoricReportPage() {
   const [skippedBranches, setSkippedBranches] = useState<Set<string>>(new Set());
   const [manualZone, setManualZone] = useState<Record<string, Partial<BranchZbhMapping>>>({});
   const [zoneHint, setZoneHint] = useState<Record<string, string>>({});
+  const [showExportChoice, setShowExportChoice] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
 
   const log = logs["payment_report"];
   const busy = fetchPhase !== "idle" || dataLoading;
@@ -122,17 +129,61 @@ export default function HistoricReportPage() {
     });
   }, [enriched, search, branch, studentType, zoneFilter]);
 
+  // Branch options cascade from the selected zone: with Bangalore chosen, the
+  // All Branches dropdown only lists branches that belong to Bangalore.
   const branchOptions = useMemo(() => {
     const set = new Set<string>();
-    rows.forEach((r) => r.branch && set.add(r.branch));
+    rows.forEach((r) => {
+      if (!r.branch) return;
+      if (zoneFilter && zoneByBranch.get(r.branch) !== zoneFilter) return;
+      set.add(r.branch);
+    });
     return [...set].sort((a, b) => a.localeCompare(b));
-  }, [rows]);
+  }, [rows, zoneByBranch, zoneFilter]);
+
+  const changeZoneFilter = (z: string) => {
+    setZoneFilter(z);
+    // Reset the branch filter if it no longer belongs to the new zone.
+    setBranch((cur) => (!cur || !z || (zoneByBranch.get(cur) ?? "") === z ? cur : ""));
+  };
 
   const handleFetchNow = async () => {
     try {
       await fetchNow("payment");
     } catch {
       // surfaced via fetchError
+    }
+  };
+
+  const hasActiveFilters = Boolean(search.trim() || branch || studentType || zoneFilter);
+
+  const activeFilterSummary = [
+    zoneFilter && `Zone: ${zoneFilter}`,
+    branch && `Branch: ${branch}`,
+    studentType && `Type: ${studentType}`,
+    search.trim() && `Search: “${search.trim()}”`,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+
+  const doExport = async (mode: "filtered" | "full") => {
+    setExporting(true);
+    setExportError(null);
+    try {
+      const source = mode === "filtered" ? filtered : enriched;
+      const data: PaymentExportRow[] = source.map((r) => ({
+        zone: r.zone,
+        branch: r.branch,
+        enrollment_code: r.enrollment_code,
+        grade: r.grade,
+        student_type: r.student_type,
+        first_paid_date: r.first_paid_date,
+      }));
+      await exportPaymentExcel(data, mode);
+    } catch (e) {
+      setExportError(`Export failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setExporting(false);
     }
   };
 
@@ -331,7 +382,7 @@ export default function HistoricReportPage() {
               <select
                 className="filter-select"
                 value={zoneFilter}
-                onChange={(e) => setZoneFilter(e.target.value)}
+                onChange={(e) => changeZoneFilter(e.target.value)}
                 aria-label="Filter by zone"
               >
                 <option value="">All Zones</option>
@@ -352,12 +403,105 @@ export default function HistoricReportPage() {
                 <option value="Old">Old</option>
               </select>
             </div>
-            <span className="row-count">
-              {busy
-                ? "Loading…"
-                : `${filtered.length.toLocaleString("en-IN")} of ${rows.length.toLocaleString("en-IN")} students`}
-            </span>
+            <div className="historic-toolbar-right">
+              <span className="row-count">
+                {busy
+                  ? "Loading…"
+                  : `${filtered.length.toLocaleString("en-IN")} of ${rows.length.toLocaleString("en-IN")} students`}
+              </span>
+              <button
+                className="btn"
+                onClick={() => {
+                  setExportError(null);
+                  // No filters active → export everything directly.
+                  if (!hasActiveFilters) {
+                    void doExport("full");
+                    return;
+                  }
+                  setShowExportChoice(true);
+                }}
+                disabled={busy || exporting || rows.length === 0}
+              >
+                <span className={exporting ? "spin" : ""} style={{ display: "inline-flex" }}>
+                  <DownloadIcon size={14} />
+                </span>
+                {exporting ? "Exporting…" : "Export Excel"}
+              </button>
+            </div>
           </div>
+
+          {exportError && (
+            <div className="upload-error">
+              <AlertIcon size={14} />
+              {exportError}
+            </div>
+          )}
+
+          {/* Export scope choice — only shown when filters are active */}
+          {showExportChoice && (
+            <div
+              className="modal-backdrop"
+              onMouseDown={(e) => e.target === e.currentTarget && setShowExportChoice(false)}
+            >
+              <div className="modal" role="dialog" aria-modal="true" aria-label="Export Excel">
+                <div className="modal-head">
+                  <h3>
+                    <DownloadIcon size={17} />
+                    Export Excel
+                  </h3>
+                  <button
+                    className="modal-close"
+                    onClick={() => setShowExportChoice(false)}
+                    aria-label="Close"
+                  >
+                    <CloseIcon size={15} />
+                  </button>
+                </div>
+                <div className="modal-body">
+                  <p className="param-note" style={{ margin: 0 }}>
+                    You have active filters. Choose what to include in the export:
+                  </p>
+                  <div className="export-choice-grid">
+                    <button
+                      className="export-choice"
+                      onClick={() => {
+                        setShowExportChoice(false);
+                        void doExport("filtered");
+                      }}
+                      disabled={exporting || filtered.length === 0}
+                    >
+                      <span className="export-choice-title">Current filtered</span>
+                      <span className="export-choice-sub">
+                        Only the {filtered.length.toLocaleString("en-IN")} rows matching your
+                        filters
+                      </span>
+                      {activeFilterSummary && (
+                        <span className="export-choice-tags">{activeFilterSummary}</span>
+                      )}
+                    </button>
+                    <button
+                      className="export-choice"
+                      onClick={() => {
+                        setShowExportChoice(false);
+                        void doExport("full");
+                      }}
+                      disabled={exporting}
+                    >
+                      <span className="export-choice-title">Full Export</span>
+                      <span className="export-choice-sub">
+                        All {rows.length.toLocaleString("en-IN")} students, ignoring filters
+                      </span>
+                    </button>
+                  </div>
+                </div>
+                <div className="modal-foot">
+                  <button className="btn" onClick={() => setShowExportChoice(false)}>
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
 
           {loadError && (
             <div className="upload-error">
