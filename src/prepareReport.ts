@@ -145,7 +145,7 @@ export function prepareReport(
 
   if (grIdx === -1) warnings.push("Column “Material Document (GR)” not found — zero-GR filter skipped.");
   if (postingIdx === -1) warnings.push("Column “Posting Date (GI)” not found — date filter and aging skipped.");
-  if (plantIdx === -1) warnings.push("Column “Plant Name” not found — Taproot/SSPL filters skipped.");
+  if (plantIdx === -1) warnings.push("Column “Plant Name” not found — ZBH/Taproot/SSPL filters skipped.");
   if (deliveryIdx === -1) warnings.push("Column “Delivery Document (GI)” not found — pending count uses row count.");
 
   const startParts = parseDateParts(params.startDate);
@@ -177,15 +177,21 @@ export function prepareReport(
   }
   const afterDate = rows.length;
 
-  // 3/4) Taproot filter on Plant Name — contains "%taproot%" (case-insensitive)
+  // 3/4) Taproot filter on the row's ZBH (via the Branch & ZBH Mapping lookup
+  // on Plant Name) — contains "taproot" case-insensitive, e.g. "Arun (Taproot)".
   if (plantIdx !== -1) {
     if (params.taproot) {
       rows = rows.filter((r) =>
-        String(r.cells[plantIdx]).toLowerCase().includes("taproot")
+        lookupZbh(String(r.cells[plantIdx] ?? "").trim() || "(Blank)")
+          .toLowerCase()
+          .includes("taproot")
       );
     } else {
       rows = rows.filter(
-        (r) => !String(r.cells[plantIdx]).toLowerCase().includes("taproot")
+        (r) =>
+          !lookupZbh(String(r.cells[plantIdx] ?? "").trim() || "(Blank)")
+            .toLowerCase()
+            .includes("taproot")
       );
     }
   }
