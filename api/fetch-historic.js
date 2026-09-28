@@ -308,18 +308,10 @@ export default async function handler(req, res) {
     const fetchedAt = new Date().toISOString();
     const logKey = `payment_report:${sessionYear}`;
 
-    const token = await eduvateLogin(username, password);
-    const csv = await downloadStoreCsv(token, session.eduvateId, reportDate);
-    const { rows, excludedBranches, totalDataRows } = buildPaymentRows(
-      csv,
-      fetchedAt,
-      sessionYear,
-      session.admissionPrefix
-    );
-
     // If the session_year column hasn't been added yet (migration pending),
     // fall back to legacy behaviour: store rows without the tag and scope
     // deletes without it. Keeps the cron working during the transition.
+    // Checked BEFORE the Eduvate download — refusing early saves ~25s.
     const hasYearColumn = await supabaseHasSessionYearColumn(supabaseUrl, serviceKey);
     if (!hasYearColumn && sessionYear !== DEFAULT_YEAR) {
       // Without the column the table can only hold ONE year at a time —
@@ -328,6 +320,15 @@ export default async function handler(req, res) {
         "session_year column is missing — run scripts/migration-session-year.sql in the Supabase SQL Editor before fetching historical years"
       );
     }
+
+    const token = await eduvateLogin(username, password);
+    const csv = await downloadStoreCsv(token, session.eduvateId, reportDate);
+    const { rows, excludedBranches, totalDataRows } = buildPaymentRows(
+      csv,
+      fetchedAt,
+      sessionYear,
+      session.admissionPrefix
+    );
     const insertRows = hasYearColumn ? rows : rows.map(({ session_year, ...r }) => r);
 
     // Refuse to wipe the snapshot with an empty transform (bad CSV, schema drift…).
