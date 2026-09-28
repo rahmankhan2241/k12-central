@@ -185,6 +185,36 @@ async function supabaseDelete(supabaseUrl, serviceKey, table, filter) {
   }
 }
 
+/**
+ * Delete rows in id-chunks so a single statement never hits the database
+ * statement timeout (a full 124k-row delete does on small plans).
+ */
+async function chunkedDeleteByDate(supabaseUrl, serviceKey, table, dateColumn, neqDate) {
+  for (let round = 0; round < 200; round++) {
+    const sel = await fetch(
+      `${supabaseUrl}/rest/v1/${table}?select=id&${dateColumn}=neq.${neqDate}&order=id.asc&limit=20000`,
+      { headers: { apikey: serviceKey, Authorization: `Bearer ${serviceKey}` } }
+    );
+    if (!sel.ok) throw new Error(`Supabase select-ids ${table} failed: ${sel.status}`);
+    const ids = await sel.json();
+    if (!Array.isArray(ids) || ids.length === 0) return;
+    const inList = `(${ids.map((r) => r.id).join(",")})`;
+    const del = await fetch(`${supabaseUrl}/rest/v1/${table}?id=in.${inList}`, {
+      method: "DELETE",
+      headers: {
+        apikey: serviceKey,
+        Authorization: `Bearer ${serviceKey}`,
+        Prefer: "return=minimal",
+      },
+    });
+    if (!del.ok) {
+      const body = await del.text();
+      throw new Error(`Supabase chunked delete ${table} failed: ${del.status} ${body.slice(0, 200)}`);
+    }
+    if (ids.length < 20000) return;
+  }
+}
+
 async function supabaseUpsert(supabaseUrl, serviceKey, table, rows) {
   const CHUNK = 800;
   for (let i = 0; i < rows.length; i += CHUNK) {
@@ -275,7 +305,7 @@ export default async function handler(req, res) {
         const rows = mapTpndRows(csv, reportDate);
         // Replace-strategy: keep only the latest snapshot so the DB doesn't
         // grow unbounded with 124k rows/day. Delete old, insert fresh.
-        await supabaseDelete(supabaseUrl, serviceKey, "historic_tpnd_rows", "report_date=neq." + reportDate);
+        await chunkedDeleteByDate(supabaseUrl, serviceKey, "historic_tpnd_rows", "report_date", reportDate);
         if (rows.length > 0) {
           await supabaseUpsert(supabaseUrl, serviceKey, "historic_tpnd_rows", rows);
         }
@@ -305,7 +335,7 @@ export default async function handler(req, res) {
       try {
         const csv = await downloadReportCsv(token, "store", sessionYearId, reportDate);
         const rows = mapStoreRows(csv, reportDate);
-        await supabaseDelete(supabaseUrl, serviceKey, "historic_store_rows", "report_date=neq." + reportDate);
+        await chunkedDeleteByDate(supabaseUrl, serviceKey, "historic_store_rows", "report_date", reportDate);
         if (rows.length > 0) {
           await supabaseUpsert(supabaseUrl, serviceKey, "historic_store_rows", rows);
         }
