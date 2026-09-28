@@ -170,8 +170,8 @@ function mapStoreRows(csvText, reportDate) {
 }
 
 // ---------- Supabase REST upsert (chunked) ----------
-async function supabaseDelete(supabaseUrl, serviceKey, table, column, value) {
-  const res = await fetch(`${supabaseUrl}/rest/v1/${table}?${column}=eq.${value}`, {
+async function supabaseDelete(supabaseUrl, serviceKey, table, filter) {
+  const res = await fetch(`${supabaseUrl}/rest/v1/${table}?${filter}`, {
     method: "DELETE",
     headers: {
       apikey: serviceKey,
