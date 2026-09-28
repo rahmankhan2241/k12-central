@@ -15,7 +15,11 @@ const PAGE_TITLES: Record<string, string> = {
   inventory: "Inventory",
 };
 
-/** Global overlay: shows while fetching/loading data, on every page, without blocking navigation. */
+/**
+ * Overlay for the Historic Report fetch/load — rendered ONLY while the user is
+ * on the Historic Report page. Other pages stay completely normal while data
+ * keeps loading (or a fetch keeps running) in the background.
+ */
 function GlobalLoader() {
   const { fetchPhase, fetchProgress } = useHistoricGlobal();
   if (fetchPhase === "idle") return null;
@@ -96,7 +100,8 @@ function Shell() {
           </div>
         </main>
       </div>
-      <GlobalLoader />
+      {/* Loader only on the Historic Report page — background loading stays invisible elsewhere. */}
+      {activePage === "historic-report" && <GlobalLoader />}
     </div>
   );
 }
