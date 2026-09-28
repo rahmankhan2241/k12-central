@@ -271,11 +271,16 @@ export default function HistoricReportPage() {
             </div>
           </div>
         </div>
-        <button className="btn primary" onClick={handleFetchNow} disabled={fetching}>
+        <button
+          className="btn primary"
+          onClick={handleFetchNow}
+          disabled={fetching}
+          title="Runs the whole pipeline: downloads from Eduvate, filters and dedupes, writes to Supabase, then refreshes this page"
+        >
           <span className={fetching ? "spin" : ""} style={{ display: "inline-flex" }}>
             <RefreshIcon size={14} />
           </span>
-          {fetching ? "Fetching…" : "Fetch Now"}
+          {fetching ? "Running pipeline…" : "Fetch Now"}
         </button>
       </div>
 

@@ -5,15 +5,21 @@
  *  - Vercel Cron daily at 02:30 UTC (8:00 AM IST)
  *  - Manual "Fetch Now" from the Historic Report page (?report=payment)
  *
- * Flow:
+ * This IS the whole pipeline — nothing is read from Supabase to build data:
  *  1. Log in to Eduvate with env credentials
- *  2. Download the Store Report - Kit Wise CSV
+ *  2. Download the Store Report CSV (~190k rows) for today
  *  3. Exclude branches containing "taproot" (case-insensitive) or "PU" (case-sensitive)
  *  4. Sort by Paid Date ascending
  *  5. Dedupe by Enrollment Code keeping the FIRST payment of each ERP
  *  6. Keep only: Branch | Enrollment Code | Grade | Student Type | First Paid Date
  *     (Student Type: ERP starts with "26" = New for FY 26-27, otherwise Old)
- *  7. Replace the snapshot in Supabase (small — one row per ERP)
+ *  7. Write the new snapshot to Supabase, replacing the previous one
+ *
+ * Snapshot replacement is insert-first, delete-second:
+ *  - every inserted row is stamped with this run's fetched_at
+ *  - after all inserts succeed, old rows are removed with a SINGLE
+ *    `fetched_at=neq.<run timestamp>` delete (no chunked select+delete)
+ *  - if anything fails before the delete, the old snapshot stays intact
  *
  * Zone is NOT stored here — the UI joins it live from the Branch & ZBH
  * mapping (Branch (Eduvate) lookup) so Add/Skip is instant.
@@ -25,6 +31,7 @@
 const FINANCE_BASE = "https://orchids.finance.letseduvate.com/qbox/apiV1";
 const ERP_BASE = "https://orchids.letseduvate.com/qbox";
 const ADMISSION_YEAR_PREFIX = "26"; // FY 2026-27
+const INSERT_WAVE = 5; // concurrent insert/delete requests
 
 // ---------- tiny CSV parser (no deps) ----------
 function parseCsv(text) {
@@ -83,11 +90,6 @@ async function downloadStoreCsv(token, sessionYearId, dateStr) {
   return await r2.text();
 }
 
-const num = (v) => {
-  const n = Number(String(v ?? "").replace(/[,₹\s]/g, ""));
-  return Number.isFinite(n) ? n : 0;
-};
-
 /** Normalise a Paid Date to yyyy-mm-dd where possible (for sorting). */
 function normalizePaidDate(s) {
   const v = String(s ?? "").trim();
@@ -107,9 +109,9 @@ function studentType(enrollmentCode) {
 }
 
 /**
- * Core transform: CSV text → first-payment-per-ERP rows.
+ * Core transform: CSV text → first-payment-per-ERP rows (stamped with fetchedAt).
  */
-function buildPaymentRows(csvText) {
+function buildPaymentRows(csvText, fetchedAt) {
   const raw = parseCsv(csvText);
   if (raw.length < 2) return { rows: [], excludedBranches: 0, totalDataRows: 0 };
 
@@ -120,7 +122,7 @@ function buildPaymentRows(csvText) {
   const iEnroll = col("Enrollment code") !== -1 ? col("Enrollment code") : col("Enrollement Code");
   const iGrade = col("Grade");
 
-  // 3) Branch filter: drop "taproot" (case-insensitive) or "PU" (case-sensitive)
+  // Branch filter: drop "taproot" (case-insensitive) or "PU" (case-sensitive)
   const isExcluded = (branch) =>
     branch.toLowerCase().includes("taproot") || branch.includes("PU");
 
@@ -142,10 +144,10 @@ function buildPaymentRows(csvText) {
     });
   }
 
-  // 2) Sort whole data by Paid Date ascending
+  // Sort whole data by Paid Date ascending
   kept.sort((a, b) => a.paidSort.localeCompare(b.paidSort));
 
-  // 3) Dedupe by ERP keeping the FIRST payment
+  // Dedupe by ERP keeping the FIRST payment
   const seen = new Set();
   const rows = [];
   for (const k of kept) {
@@ -158,6 +160,7 @@ function buildPaymentRows(csvText) {
       grade: k.grade,
       student_type: studentType(k.enrollment_code),
       first_paid_date: k.paidRaw,
+      fetched_at: fetchedAt,
     });
   }
 
@@ -165,47 +168,50 @@ function buildPaymentRows(csvText) {
 }
 
 // ---------- Supabase helpers ----------
-async function chunkedDeleteAll(supabaseUrl, serviceKey, table) {
-  for (let round = 0; round < 500; round++) {
-    const sel = await fetch(
-      `${supabaseUrl}/rest/v1/${table}?select=id&order=id.asc&limit=1000`,
-      { headers: { apikey: serviceKey, Authorization: `Bearer ${serviceKey}` } }
+async function supabaseInsertWave(supabaseUrl, serviceKey, table, rows, waveSize = INSERT_WAVE) {
+  const chunks = [];
+  for (let i = 0; i < rows.length; i += 1000) chunks.push(rows.slice(i, i + 1000));
+  for (let i = 0; i < chunks.length; i += waveSize) {
+    const wave = chunks.slice(i, i + waveSize);
+    const results = await Promise.all(
+      wave.map((chunk) =>
+        fetch(`${supabaseUrl}/rest/v1/${table}`, {
+          method: "POST",
+          headers: {
+            apikey: serviceKey,
+            Authorization: `Bearer ${serviceKey}`,
+            "Content-Type": "application/json",
+            Prefer: "return=minimal",
+          },
+          body: JSON.stringify(chunk),
+        }).then(async (res) => {
+          if (!res.ok) {
+            const body = await res.text();
+            throw new Error(`Supabase insert ${table} failed: ${res.status} ${body.slice(0, 300)}`);
+          }
+        })
+      )
     );
-    if (!sel.ok) throw new Error(`Supabase select-ids ${table} failed: ${sel.status} ${(await sel.text()).slice(0, 150)}`);
-    const ids = await sel.json();
-    if (!Array.isArray(ids) || ids.length === 0) return;
-    const inList = `(${ids.map((r) => r.id).join(",")})`;
-    const del = await fetch(`${supabaseUrl}/rest/v1/${table}?id=in.${inList}`, {
+    void results;
+  }
+}
+
+/** Remove every row from a previous run in ONE request via fetched_at=neq.<ts>. */
+async function supabaseDeleteOldGeneration(supabaseUrl, serviceKey, table, fetchedAt) {
+  const res = await fetch(
+    `${supabaseUrl}/rest/v1/${table}?fetched_at=neq.${encodeURIComponent(fetchedAt)}`,
+    {
       method: "DELETE",
       headers: {
         apikey: serviceKey,
         Authorization: `Bearer ${serviceKey}`,
         Prefer: "return=minimal",
       },
-    });
-    if (!del.ok) {
-      const body = await del.text();
-      throw new Error(`Supabase chunked delete ${table} failed: ${del.status} ${body.slice(0, 200)}`);
     }
-  }
-}
-
-async function supabaseInsert(supabaseUrl, serviceKey, table, rows, chunkSize = 1000) {
-  for (let i = 0; i < rows.length; i += chunkSize) {
-    const res = await fetch(`${supabaseUrl}/rest/v1/${table}`, {
-      method: "POST",
-      headers: {
-        apikey: serviceKey,
-        Authorization: `Bearer ${serviceKey}`,
-        "Content-Type": "application/json",
-        Prefer: "return=minimal",
-      },
-      body: JSON.stringify(rows.slice(i, i + chunkSize)),
-    });
-    if (!res.ok) {
-      const body = await res.text();
-      throw new Error(`Supabase insert ${table} failed: ${res.status} ${body.slice(0, 300)}`);
-    }
+  );
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`Supabase delete-old-rows ${table} failed: ${res.status} ${body.slice(0, 200)}`);
   }
 }
 
@@ -259,16 +265,41 @@ export default async function handler(req, res) {
     }
 
     const reportDate = new Date().toISOString().slice(0, 10);
+    const fetchedAt = new Date().toISOString();
 
     const token = await eduvateLogin(username, password);
     const csv = await downloadStoreCsv(token, sessionYearId, reportDate);
-    const { rows, excludedBranches, totalDataRows } = buildPaymentRows(csv);
+    const { rows, excludedBranches, totalDataRows } = buildPaymentRows(csv, fetchedAt);
 
-    // Replace snapshot
-    await chunkedDeleteAll(supabaseUrl, serviceKey, "payment_report_rows");
-    if (rows.length > 0) {
-      await supabaseInsert(supabaseUrl, serviceKey, "payment_report_rows", rows);
+    // Refuse to wipe the snapshot with an empty transform (bad CSV, schema drift…).
+    if (rows.length === 0) {
+      throw new Error(
+        `Transform produced 0 rows from ${totalDataRows} CSV rows — refusing to replace the snapshot`
+      );
     }
+
+    // Insert the new generation FIRST (old data untouched on failure)…
+    try {
+      await supabaseInsertWave(supabaseUrl, serviceKey, "payment_report_rows", rows);
+    } catch (e) {
+      // Roll back the partial new generation so the table keeps ONLY the
+      // previous complete snapshot (no duplicate rows from the half-write).
+      await fetch(
+        `${supabaseUrl}/rest/v1/payment_report_rows?fetched_at=eq.${encodeURIComponent(fetchedAt)}`,
+        {
+          method: "DELETE",
+          headers: {
+            apikey: serviceKey,
+            Authorization: `Bearer ${serviceKey}`,
+            Prefer: "return=minimal",
+          },
+        }
+      ).catch(() => {});
+      throw e;
+    }
+
+    // …then drop every row from previous runs in one request.
+    await supabaseDeleteOldGeneration(supabaseUrl, serviceKey, "payment_report_rows", fetchedAt);
 
     await supabaseFetchLogUpsert(supabaseUrl, serviceKey, {
       report_key: "payment_report",
