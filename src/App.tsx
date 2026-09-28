@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { createPortal } from "react-dom";
 import Sidebar from "./components/Sidebar";
 import HomePage from "./pages/HomePage";
 import PendingGrnPage from "./pages/PendingGrnPage";
@@ -18,7 +19,8 @@ const PAGE_TITLES: Record<string, string> = {
 function GlobalLoader() {
   const { fetchPhase, fetchProgress } = useHistoricGlobal();
   if (fetchPhase === "idle") return null;
-  return (
+  // Portal to <body> so centering can't be affected by transformed ancestors.
+  return createPortal(
     <div className="global-loader" role="status" aria-live="polite">
       <div className="global-loader-card">
         <span className="spinner" aria-hidden="true" />
@@ -28,7 +30,8 @@ function GlobalLoader() {
         {fetchProgress && <div className="global-loader-sub">{fetchProgress}</div>}
         <div className="global-loader-hint">You can keep using other pages — this continues in the background.</div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }
 
