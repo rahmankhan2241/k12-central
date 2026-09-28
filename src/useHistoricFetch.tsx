@@ -180,6 +180,7 @@ export function HistoricProvider({ children }: { children: ReactNode }) {
       if (!mounted.current) return;
       setRowsByYear((m) => ({ ...m, [year]: all }));
       setLoadError(null);
+      setNeedsMigration(false); // a successful load proves the schema is current
     } catch (e) {
       if (!mounted.current) return;
       setLoadError(errText(e));

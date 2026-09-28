@@ -25,8 +25,9 @@ CREATE INDEX IF NOT EXISTS payment_report_rows_session_year_idx
   ON public.payment_report_rows (session_year);
 
 -- 5) One fetch-log row PER year instead of a single shared one.
---    report_key becomes '<key>:<year>' (e.g. payment_report:2025-26).
---    Rename the existing 26-27 log row so its history is kept.
-UPDATE public.historic_fetch_log
-SET report_key = 'payment_report:2026-27'
+--    report_key becomes '<key>:<year>' (e.g. payment_report:2026-27).
+--    The serverless already writes per-year keys, so the old shared row is
+--    superseded — drop it. (A plain rename would collide with the fresh
+--    payment_report:2026-27 row's unique key.)
+DELETE FROM public.historic_fetch_log
 WHERE report_key = 'payment_report';
