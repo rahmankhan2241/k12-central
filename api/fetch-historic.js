@@ -185,17 +185,19 @@ async function supabaseDelete(supabaseUrl, serviceKey, table, filter) {
   }
 }
 
-async function supabaseUpsert(supabaseUrl, serviceKey, table, rows, conflictCols) {
+async function supabaseUpsert(supabaseUrl, serviceKey, table, rows) {
   const CHUNK = 800;
   for (let i = 0; i < rows.length; i += CHUNK) {
     const chunk = rows.slice(i, i + CHUNK);
-    const res = await fetch(`${supabaseUrl}/rest/v1/${table}?on_conflict=${conflictCols}`, {
+    // Plain insert — the caller deletes the previous snapshot first, so no
+    // unique constraint / merge-duplicates is needed.
+    const res = await fetch(`${supabaseUrl}/rest/v1/${table}`, {
       method: "POST",
       headers: {
         apikey: serviceKey,
         Authorization: `Bearer ${serviceKey}`,
         "Content-Type": "application/json",
-        Prefer: "resolution=merge-duplicates,return=minimal",
+        Prefer: "return=minimal",
       },
       body: JSON.stringify(chunk),
     });
@@ -275,7 +277,7 @@ export default async function handler(req, res) {
         // grow unbounded with 124k rows/day. Delete old, insert fresh.
         await supabaseDelete(supabaseUrl, serviceKey, "historic_tpnd_rows", "report_date=neq." + reportDate);
         if (rows.length > 0) {
-          await supabaseUpsert(supabaseUrl, serviceKey, "historic_tpnd_rows", rows, "report_date,enrollment_code,grade");
+          await supabaseUpsert(supabaseUrl, serviceKey, "historic_tpnd_rows", rows);
         }
         await supabaseFetchLogUpsert(supabaseUrl, serviceKey, {
           report_key: "tpnd_installment",
@@ -305,7 +307,7 @@ export default async function handler(req, res) {
         const rows = mapStoreRows(csv, reportDate);
         await supabaseDelete(supabaseUrl, serviceKey, "historic_store_rows", "report_date=neq." + reportDate);
         if (rows.length > 0) {
-          await supabaseUpsert(supabaseUrl, serviceKey, "historic_store_rows", rows, "report_date,enrollment_code,kit_name,paid_date,receipt_no");
+          await supabaseUpsert(supabaseUrl, serviceKey, "historic_store_rows", rows);
         }
         await supabaseFetchLogUpsert(supabaseUrl, serviceKey, {
           report_key: "store_kit_wise",
