@@ -1,9 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
-import { supabase, isSupabaseConfigured } from "../supabaseClient";
+import { useMemo, useState } from "react";
 import { useBranchZbhMapping } from "../useBranchZbhMapping";
-import { useHistoricFetch } from "../useHistoricFetch";
+import { useHistoricGlobal } from "../useHistoricFetch";
 import { findZoneByBranchEduvate } from "../types";
-import type { BranchZbhMapping, PaymentReportRow } from "../types";
+import type { BranchZbhMapping } from "../types";
 import {
   AlertIcon,
   CheckCircleIcon,
@@ -47,65 +46,29 @@ function timeAgo(iso: string | null | undefined): string {
 
 export default function HistoricReportPage() {
   const [tab, setTab] = useState<TabId>("payment");
-  const { logs, loading: logsLoading, fetching, fetchError, fetchNow } = useHistoricFetch();
+  const {
+    logs,
+    logsLoading,
+    fetching,
+    fetchError,
+    fetchNow,
+    fetchPhase,
+    rows,
+    dataLoading,
+    loadError,
+  } = useHistoricGlobal();
   const { rows: mapping, setRows: setMappingRows, status: mappingStatus } = useBranchZbhMapping();
 
   const [search, setSearch] = useState("");
   const [branch, setBranch] = useState("");
   const [studentType, setStudentType] = useState("");
   const [zoneFilter, setZoneFilter] = useState("");
-  const [rows, setRows] = useState<PaymentReportRow[]>([]);
-  const [dataLoading, setDataLoading] = useState(true);
-  const [loadError, setLoadError] = useState<string | null>(null);
   const [skippedBranches, setSkippedBranches] = useState<Set<string>>(new Set());
   const [manualZone, setManualZone] = useState<Record<string, Partial<BranchZbhMapping>>>({});
   const [zoneHint, setZoneHint] = useState<Record<string, string>>({});
 
   const log = logs["payment_report"];
-
-  // Load payment rows
-  useEffect(() => {
-    if (tab !== "payment") return;
-    let cancelled = false;
-    (async () => {
-      setDataLoading(true);
-      setLoadError(null);
-      if (!isSupabaseConfigured) {
-        setLoadError("Supabase is not configured.");
-        setDataLoading(false);
-        return;
-      }
-      // PostgREST caps a single request at 1000 rows, so page through the
-      // whole snapshot (10x10k → ~96 requests of 1000).
-      const all: PaymentReportRow[] = [];
-      const PAGE = 1000;
-      for (let offset = 0; offset < 200000; offset += PAGE) {
-        const { data, error } = await supabase
-          .from("payment_report_rows")
-          .select("*")
-          .order("first_paid_date", { ascending: true })
-          .order("id", { ascending: true })
-          .range(offset, offset + PAGE - 1);
-        if (error) {
-          const msg =
-            typeof error === "object" && error !== null && "message" in error
-              ? String((error as { message: unknown }).message)
-              : String(error);
-          if (!cancelled) setLoadError(msg);
-          setDataLoading(false);
-          return;
-        }
-        const page = (data ?? []) as PaymentReportRow[];
-        all.push(...page);
-        if (page.length < PAGE) break; // last page
-      }
-      if (!cancelled) setRows(all);
-      setDataLoading(false);
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [tab, log?.last_fetched_at]);
+  const busy = fetchPhase !== "idle" || dataLoading;
 
   // Zone per branch (Branch (Eduvate) lookup in the Branch & ZBH Mapping).
   // In-progress typing in the unmapped card deliberately does NOT count here —
@@ -186,10 +149,7 @@ export default function HistoricReportPage() {
       branchEduvate: b,
       zbh: vals.zbh?.trim() ?? existing?.zbh ?? "",
     };
-    // Save to the shared mapping (persists to Supabase + localStorage cache).
     setMappingRows([...mapping, newRow]);
-    // Clear the in-progress inputs; the row leaves the unmapped list because
-    // the saved mapping now contains it.
     setManualZone(({ [b]: _drop, ...rest }) => rest);
     setZoneHint(({ [b]: _drop, ...rest }) => rest);
     setSkippedBranches((s) => {
@@ -261,7 +221,9 @@ export default function HistoricReportPage() {
           </div>
         </div>
         <button className="btn primary" onClick={handleFetchNow} disabled={fetching}>
-          <RefreshIcon size={14} />
+          <span className={fetching ? "spin" : ""} style={{ display: "inline-flex" }}>
+            <RefreshIcon size={14} />
+          </span>
           {fetching ? "Fetching…" : "Fetch Now"}
         </button>
       </div>
@@ -289,7 +251,7 @@ export default function HistoricReportPage() {
       ) : (
         <>
           {/* Unmapped zone card */}
-          {unmappedBranches.length > 0 && mappingStatus !== "loading" && (
+          {unmappedBranches.length > 0 && mappingStatus !== "loading" && !busy && (
             <div className="card unmapped-card">
               <div className="card-head">
                 <div className="card-title">
@@ -391,7 +353,7 @@ export default function HistoricReportPage() {
               </select>
             </div>
             <span className="row-count">
-              {dataLoading
+              {busy
                 ? "Loading…"
                 : `${filtered.length.toLocaleString("en-IN")} of ${rows.length.toLocaleString("en-IN")} students`}
             </span>
@@ -419,14 +381,7 @@ export default function HistoricReportPage() {
                 </tr>
               </thead>
               <tbody>
-                {dataLoading && (
-                  <tr>
-                    <td colSpan={7} className="table-empty">
-                      Loading data…
-                    </td>
-                  </tr>
-                )}
-                {!dataLoading &&
+                {!busy &&
                   filtered.slice(0, 500).map((r, i) => (
                     <tr key={r.id}>
                       <td className="mapping-idx">{i + 1}</td>
@@ -442,7 +397,7 @@ export default function HistoricReportPage() {
                       <td>{r.first_paid_date}</td>
                     </tr>
                   ))}
-                {!dataLoading && filtered.length === 0 && (
+                {!busy && filtered.length === 0 && (
                   <tr>
                     <td colSpan={7} className="table-empty">
                       No students found{search || branch || studentType || zoneFilter ? " match your filters" : " — fetch the report to load data"}.
@@ -451,7 +406,7 @@ export default function HistoricReportPage() {
                 )}
               </tbody>
             </table>
-            {filtered.length > 500 && (
+            {!busy && filtered.length > 500 && (
               <div className="table-more-hint">
                 Showing first 500 of {filtered.length.toLocaleString("en-IN")} matching students. Use the filters to narrow down.
               </div>

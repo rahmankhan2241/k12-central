@@ -2067,3 +2067,63 @@ button.sync-pill.failed:hover {
   background: #e8eefb;
   color: #1d4ed8;
 }
+
+/* Global loader overlay (non-blocking) */
+.global-loader {
+  position: fixed;
+  inset: 0;
+  z-index: 3000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(15, 23, 42, 0.18);
+  backdrop-filter: blur(1px);
+  pointer-events: none; /* never blocks clicks or navigation */
+}
+
+.global-loader-card {
+  background: var(--surface, #fff);
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: 14px;
+  box-shadow: 0 12px 40px rgba(15, 23, 42, 0.18);
+  padding: 22px 30px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  text-align: center;
+  max-width: 420px;
+}
+
+.spinner {
+  width: 26px;
+  height: 26px;
+  border: 3px solid rgba(18, 50, 94, 0.15);
+  border-top-color: var(--accent, #12325e);
+  border-radius: 50%;
+  animation: k12-spin 0.8s linear infinite;
+}
+
+@keyframes k12-spin {
+  to { transform: rotate(360deg); }
+}
+
+.global-loader-title {
+  font-weight: 700;
+  font-size: 14.5px;
+}
+
+.global-loader-sub {
+  font-size: 12.5px;
+  color: var(--text-muted, #64748b);
+}
+
+.global-loader-hint {
+  font-size: 11.5px;
+  color: var(--text-muted, #94a3b8);
+  margin-top: 2px;
+}
+
+.spin {
+  animation: k12-spin 0.9s linear infinite;
+}

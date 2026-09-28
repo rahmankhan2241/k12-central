@@ -5,6 +5,7 @@ import PendingGrnPage from "./pages/PendingGrnPage";
 import HistoricReportPage from "./pages/HistoricReportPage";
 import SettingsPage from "./pages/SettingsPage";
 import PlaceholderPage from "./pages/PlaceholderPage";
+import { HistoricProvider, useHistoricGlobal } from "./useHistoricFetch";
 import { K12Logo, MenuIcon } from "./icons";
 
 const PAGE_TITLES: Record<string, string> = {
@@ -13,7 +14,25 @@ const PAGE_TITLES: Record<string, string> = {
   inventory: "Inventory",
 };
 
-export default function App() {
+/** Global overlay: shows while fetching/loading data, on every page, without blocking navigation. */
+function GlobalLoader() {
+  const { fetchPhase, fetchProgress } = useHistoricGlobal();
+  if (fetchPhase === "idle") return null;
+  return (
+    <div className="global-loader" role="status" aria-live="polite">
+      <div className="global-loader-card">
+        <span className="spinner" aria-hidden="true" />
+        <div className="global-loader-title">
+          {fetchPhase === "fetching" ? "Fetching report from Eduvate…" : "Loading report data…"}
+        </div>
+        {fetchProgress && <div className="global-loader-sub">{fetchProgress}</div>}
+        <div className="global-loader-hint">You can keep using other pages — this continues in the background.</div>
+      </div>
+    </div>
+  );
+}
+
+function Shell() {
   const [activePage, setActivePage] = useState("home");
   const [collapsed, setCollapsed] = useState(false);
 
@@ -74,6 +93,15 @@ export default function App() {
           </div>
         </main>
       </div>
+      <GlobalLoader />
     </div>
+  );
+}
+
+export default function App() {
+  return (
+    <HistoricProvider>
+      <Shell />
+    </HistoricProvider>
   );
 }
