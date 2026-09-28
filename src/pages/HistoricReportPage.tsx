@@ -75,21 +75,31 @@ export default function HistoricReportPage() {
         setDataLoading(false);
         return;
       }
-      const { data, error } = await supabase
-        .from("payment_report_rows")
-        .select("*")
-        .order("first_paid_date", { ascending: true })
-        .range(0, 1999999); // fetch all — PostgREST hard-caps .limit() at 1000
-      if (cancelled) return;
-      if (error) {
-        const msg =
-          typeof error === "object" && error !== null && "message" in error
-            ? String((error as { message: unknown }).message)
-            : String(error);
-        setLoadError(msg);
-      } else {
-        setRows((data ?? []) as PaymentReportRow[]);
+      // PostgREST caps a single request at 1000 rows, so page through the
+      // whole snapshot (10x10k → ~96 requests of 1000).
+      const all: PaymentReportRow[] = [];
+      const PAGE = 1000;
+      for (let offset = 0; offset < 200000; offset += PAGE) {
+        const { data, error } = await supabase
+          .from("payment_report_rows")
+          .select("*")
+          .order("first_paid_date", { ascending: true })
+          .order("id", { ascending: true })
+          .range(offset, offset + PAGE - 1);
+        if (error) {
+          const msg =
+            typeof error === "object" && error !== null && "message" in error
+              ? String((error as { message: unknown }).message)
+              : String(error);
+          if (!cancelled) setLoadError(msg);
+          setDataLoading(false);
+          return;
+        }
+        const page = (data ?? []) as PaymentReportRow[];
+        all.push(...page);
+        if (page.length < PAGE) break; // last page
       }
+      if (!cancelled) setRows(all);
       setDataLoading(false);
     })();
     return () => {
