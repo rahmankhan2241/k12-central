@@ -1,26 +1,30 @@
 /**
- * Vercel Serverless Function — Historic Report fetcher.
+ * Vercel Serverless Function — Payment Report fetcher (Historic Report).
  *
  * Triggered by:
  *  - Vercel Cron daily at 02:30 UTC (8:00 AM IST)
- *  - Manual "Fetch Now" from the Historic Report page (GET ?report=tpnd|store|all)
+ *  - Manual "Fetch Now" from the Historic Report page (?report=payment)
  *
- * Flow: log in to Eduvate with env credentials → get signed CSV URLs →
- * download CSVs → upsert into Supabase → update fetch log.
+ * Flow:
+ *  1. Log in to Eduvate with env credentials
+ *  2. Download the Store Report - Kit Wise CSV
+ *  3. Exclude branches containing "taproot" (case-insensitive) or "PU" (case-sensitive)
+ *  4. Sort by Paid Date ascending
+ *  5. Dedupe by Enrollment Code keeping the FIRST payment of each ERP
+ *  6. Keep only: Branch | Enrollment Code | Grade | Student Type | First Paid Date
+ *     (Student Type: ERP starts with "26" = New for FY 26-27, otherwise Old)
+ *  7. Replace the snapshot in Supabase (small — one row per ERP)
  *
- * Required env vars (set in Vercel → Settings → Environment Variables):
- *   EDUVATE_USERNAME  — Eduvate ERP ID (e.g. 20250003042_OIS)
- *   EDUVATE_PASSWORD  — Eduvate password
- *   SUPABASE_URL      — https://dovbrtzcxicfudskwyat.supabase.co
- *   SUPABASE_SERVICE_KEY — service_role key (bypasses RLS; server-side only!)
+ * Zone is NOT stored here — the UI joins it live from the Branch & ZBH
+ * mapping (Branch (Eduvate) lookup) so Add/Skip is instant.
  *
- * Optional env vars:
- *   FINANCE_SESSION_YEAR_ID — default "47" (FY 2026-27)
- *   CRON_SECRET — if set, scheduled invocations must send this as Authorization Bearer
+ * Env vars: EDUVATE_USERNAME, EDUVATE_PASSWORD, SUPABASE_URL,
+ * SUPABASE_SERVICE_KEY (or SUPABASE_SERVICE_ROLE_KEY), FINANCE_SESSION_YEAR_ID (default 47).
  */
 
 const FINANCE_BASE = "https://orchids.finance.letseduvate.com/qbox/apiV1";
 const ERP_BASE = "https://orchids.letseduvate.com/qbox";
+const ADMISSION_YEAR_PREFIX = "26"; // FY 2026-27
 
 // ---------- tiny CSV parser (no deps) ----------
 function parseCsv(text) {
@@ -62,140 +66,112 @@ async function eduvateLogin(username, password) {
   if (data.status_code !== 200 || !data.result) {
     throw new Error(`Eduvate login failed (${res.status}): ${JSON.stringify(data).slice(0, 300)}`);
   }
-  const result = data.result;
-  const token = result.access_token || result.access;
+  const token = data.result.access_token || data.result.access;
   if (!token) throw new Error("Eduvate login returned no access token");
   return token;
 }
 
-// ---------- Download a report CSV ----------
-async function downloadReportCsv(token, kind, sessionYearId, dateStr) {
-  const url =
-    kind === "tpnd"
-      ? `${FINANCE_BASE}/tpnd_report_download_url/?finance_session_year_id=${sessionYearId}&date=${dateStr}&rep_type=installment`
-      : `${FINANCE_BASE}/storereport_download_url/?finance_session_year_id=${sessionYearId}&date=${dateStr}`;
+// ---------- Download the Store Report CSV ----------
+async function downloadStoreCsv(token, sessionYearId, dateStr) {
+  const url = `${FINANCE_BASE}/storereport_download_url/?finance_session_year_id=${sessionYearId}&date=${dateStr}`;
   const r1 = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
-  if (!r1.ok) throw new Error(`Download-URL API ${kind} failed: ${r1.status}`);
+  if (!r1.ok) throw new Error(`Download-URL API failed: ${r1.status}`);
   const j1 = await r1.json();
-  const csvUrl = j1.data;
-  if (!csvUrl) throw new Error(`No CSV URL returned for ${kind}: ${JSON.stringify(j1).slice(0, 200)}`);
-  const r2 = await fetch(csvUrl);
-  if (!r2.ok) throw new Error(`CSV download ${kind} failed: ${r2.status}`);
+  if (!j1.data) throw new Error(`No CSV URL returned: ${JSON.stringify(j1).slice(0, 200)}`);
+  const r2 = await fetch(j1.data);
+  if (!r2.ok) throw new Error(`CSV download failed: ${r2.status}`);
   return await r2.text();
 }
 
-// ---------- Row mapping ----------
 const num = (v) => {
   const n = Number(String(v ?? "").replace(/[,₹\s]/g, ""));
   return Number.isFinite(n) ? n : 0;
 };
-const todayIso = () => new Date().toISOString().slice(0, 10);
 
-function mapTpndRows(csvText, reportDate) {
-  const rows = parseCsv(csvText);
-  if (rows.length < 2) return [];
-  const header = rows[0].map((h) => h.trim());
-  const col = (name) => header.findIndex((h) => h.toLowerCase() === name.toLowerCase());
-  const iBranch = col("Branch Name");
-  const iGrade = col("Grade");
-  const iEnroll = col("Enrollement Code") !== -1 ? col("Enrollement Code") : col("Enrollment Code");
-  const iStatus = col("Permanent_Status");
-  const out = [];
-  for (let r = 1; r < rows.length; r++) {
-    const cells = rows[r];
-    if (!cells || cells.length < 2) continue;
-    const enrollment = String(cells[iEnroll] ?? "").trim();
-    if (!enrollment) continue;
-    const extra = {};
-    header.forEach((h, idx) => {
-      if (![iBranch, iGrade, iEnroll, iStatus].includes(idx)) {
-        const v = String(cells[idx] ?? "").trim();
-        if (v) extra[h] = v;
-      }
-    });
-    out.push({
-      report_date: reportDate,
-      branch_name: String(cells[iBranch] ?? "").trim(),
-      grade: String(cells[iGrade] ?? "").trim(),
-      enrollment_code: enrollment,
-      permanent_status: String(cells[iStatus] ?? "").trim(),
-      extra,
-    });
+/** Normalise a Paid Date to yyyy-mm-dd where possible (for sorting). */
+function normalizePaidDate(s) {
+  const v = String(s ?? "").trim();
+  let m = v.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (m) return `${m[1]}-${m[2].padStart(2, "0")}-${m[3].padStart(2, "0")}`;
+  m = v.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})$/);
+  if (m) {
+    const y = +m[3] < 100 ? 2000 + +m[3] : +m[3];
+    return `${y}-${m[2].padStart(2, "0")}-${m[1].padStart(2, "0")}`; // day-first
   }
-  return out;
+  return v; // leave as-is; sorts after real dates
 }
 
-function mapStoreRows(csvText, reportDate) {
-  const rows = parseCsv(csvText);
-  if (rows.length < 2) return [];
-  const header = rows[0].map((h) => h.trim());
+function studentType(enrollmentCode) {
+  const code = String(enrollmentCode ?? "").trim();
+  return code.startsWith(ADMISSION_YEAR_PREFIX) ? "New" : "Old";
+}
+
+/**
+ * Core transform: CSV text → first-payment-per-ERP rows.
+ */
+function buildPaymentRows(csvText) {
+  const raw = parseCsv(csvText);
+  if (raw.length < 2) return { rows: [], excludedBranches: 0, totalDataRows: 0 };
+
+  const header = raw[0].map((h) => h.trim());
   const col = (name) => header.findIndex((h) => h.toLowerCase() === name.toLowerCase());
   const iBranch = col("Branch");
   const iPaid = col("Paid Date");
   const iEnroll = col("Enrollment code") !== -1 ? col("Enrollment code") : col("Enrollement Code");
   const iGrade = col("Grade");
-  const iSection = col("Section");
-  const iKit = col("Kit Name");
-  const iQty = col("Quantity");
-  const iAmount = col("Amount");
-  const iTotal = col("Total");
-  const iReceipt = col("Receipt No");
-  const out = [];
-  for (let r = 1; r < rows.length; r++) {
-    const cells = rows[r];
+
+  // 3) Branch filter: drop "taproot" (case-insensitive) or "PU" (case-sensitive)
+  const isExcluded = (branch) =>
+    branch.toLowerCase().includes("taproot") || branch.includes("PU");
+
+  let excludedBranches = 0;
+  const kept = [];
+  for (let r = 1; r < raw.length; r++) {
+    const cells = raw[r];
     if (!cells || cells.length < 2) continue;
-    const extra = {};
-    header.forEach((h, idx) => {
-      if (![iBranch, iPaid, iEnroll, iGrade, iSection, iKit, iQty, iAmount, iTotal, iReceipt].includes(idx)) {
-        const v = String(cells[idx] ?? "").trim();
-        if (v) extra[h] = v;
-      }
-    });
-    out.push({
-      report_date: reportDate,
-      branch: String(cells[iBranch] ?? "").trim(),
-      paid_date: String(cells[iPaid] ?? "").trim(),
-      enrollment_code: String(cells[iEnroll] ?? "").trim(),
+    const branch = String(cells[iBranch] ?? "").trim();
+    const enroll = String(cells[iEnroll] ?? "").trim();
+    if (!enroll) continue;
+    if (isExcluded(branch)) { excludedBranches++; continue; }
+    kept.push({
+      branch,
+      enrollment_code: enroll,
       grade: String(cells[iGrade] ?? "").trim(),
-      section: String(cells[iSection] ?? "").trim(),
-      kit_name: String(cells[iKit] ?? "").trim(),
-      quantity: num(cells[iQty]),
-      amount: num(cells[iAmount]),
-      total: num(cells[iTotal]),
-      receipt_no: String(cells[iReceipt] ?? "").trim(),
-      extra,
+      paidSort: normalizePaidDate(cells[iPaid]),
+      paidRaw: String(cells[iPaid] ?? "").trim(),
     });
   }
-  return out;
-}
 
-// ---------- Supabase REST upsert (chunked) ----------
-async function supabaseDelete(supabaseUrl, serviceKey, table, filter) {
-  const res = await fetch(`${supabaseUrl}/rest/v1/${table}?${filter}`, {
-    method: "DELETE",
-    headers: {
-      apikey: serviceKey,
-      Authorization: `Bearer ${serviceKey}`,
-      Prefer: "return=minimal",
-    },
-  });
-  if (!res.ok) {
-    const body = await res.text();
-    throw new Error(`Supabase delete ${table} failed: ${res.status} ${body.slice(0, 300)}`);
+  // 2) Sort whole data by Paid Date ascending
+  kept.sort((a, b) => a.paidSort.localeCompare(b.paidSort));
+
+  // 3) Dedupe by ERP keeping the FIRST payment
+  const seen = new Set();
+  const rows = [];
+  for (const k of kept) {
+    const key = k.enrollment_code.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    rows.push({
+      branch: k.branch,
+      enrollment_code: k.enrollment_code,
+      grade: k.grade,
+      student_type: studentType(k.enrollment_code),
+      first_paid_date: k.paidRaw,
+    });
   }
+
+  return { rows, excludedBranches, totalDataRows: raw.length - 1 };
 }
 
-/**
- * Delete rows in id-chunks so a single statement never hits the database
- * statement timeout (a full 124k-row delete does on small plans).
- */
-async function chunkedDeleteByDate(supabaseUrl, serviceKey, table, dateColumn, neqDate) {
-  for (let round = 0; round < 200; round++) {
+// ---------- Supabase helpers ----------
+async function chunkedDeleteAll(supabaseUrl, serviceKey, table) {
+  for (let round = 0; round < 500; round++) {
     const sel = await fetch(
-      `${supabaseUrl}/rest/v1/${table}?select=id&${dateColumn}=neq.${neqDate}&order=id.asc&limit=20000`,
+      `${supabaseUrl}/rest/v1/${table}?select=id&order=id.asc&limit=1000`,
       { headers: { apikey: serviceKey, Authorization: `Bearer ${serviceKey}` } }
     );
-    if (!sel.ok) throw new Error(`Supabase select-ids ${table} failed: ${sel.status}`);
+    if (!sel.ok) throw new Error(`Supabase select-ids ${table} failed: ${sel.status} ${(await sel.text()).slice(0, 150)}`);
     const ids = await sel.json();
     if (!Array.isArray(ids) || ids.length === 0) return;
     const inList = `(${ids.map((r) => r.id).join(",")})`;
@@ -211,16 +187,11 @@ async function chunkedDeleteByDate(supabaseUrl, serviceKey, table, dateColumn, n
       const body = await del.text();
       throw new Error(`Supabase chunked delete ${table} failed: ${del.status} ${body.slice(0, 200)}`);
     }
-    if (ids.length < 20000) return;
   }
 }
 
-async function supabaseUpsert(supabaseUrl, serviceKey, table, rows) {
-  const CHUNK = 800;
-  for (let i = 0; i < rows.length; i += CHUNK) {
-    const chunk = rows.slice(i, i + CHUNK);
-    // Plain insert — the caller deletes the previous snapshot first, so no
-    // unique constraint / merge-duplicates is needed.
+async function supabaseInsert(supabaseUrl, serviceKey, table, rows, chunkSize = 1000) {
+  for (let i = 0; i < rows.length; i += chunkSize) {
     const res = await fetch(`${supabaseUrl}/rest/v1/${table}`, {
       method: "POST",
       headers: {
@@ -229,11 +200,11 @@ async function supabaseUpsert(supabaseUrl, serviceKey, table, rows) {
         "Content-Type": "application/json",
         Prefer: "return=minimal",
       },
-      body: JSON.stringify(chunk),
+      body: JSON.stringify(rows.slice(i, i + chunkSize)),
     });
     if (!res.ok) {
       const body = await res.text();
-      throw new Error(`Supabase upsert ${table} failed: ${res.status} ${body.slice(0, 300)}`);
+      throw new Error(`Supabase insert ${table} failed: ${res.status} ${body.slice(0, 300)}`);
     }
   }
 }
@@ -262,8 +233,6 @@ export default async function handler(req, res) {
     process.env.SUPABASE_URL ||
     process.env.VITE_SUPABASE_URL ||
     "https://dovbrtzcxicfudskwyat.supabase.co";
-  // Supabase↔Vercel integration provides SUPABASE_SERVICE_ROLE_KEY;
-  // a manually-set SUPABASE_SERVICE_KEY also works.
   const serviceKey =
     process.env.SUPABASE_SERVICE_KEY ||
     process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -282,7 +251,6 @@ export default async function handler(req, res) {
     if (!serviceKey) throw new Error("SUPABASE_SERVICE_KEY env var is not set");
     if (!username || !password) throw new Error("EDUVATE_USERNAME / EDUVATE_PASSWORD env vars are not set");
 
-    // Cron auth: if triggered by Vercel Cron (no user session), require the secret
     const authHeader = req.headers.authorization || "";
     const isVercelCron = req.headers["x-vercel-cron"] !== undefined;
     if (isVercelCron && process.env.CRON_SECRET && authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
@@ -290,81 +258,55 @@ export default async function handler(req, res) {
       return res.end(JSON.stringify({ error: "Unauthorized cron call" }));
     }
 
-    const which = (req.query.report || "all").toString();
-    const reportDate = todayIso();
-    const results = {};
+    const reportDate = new Date().toISOString().slice(0, 10);
 
     const token = await eduvateLogin(username, password);
+    const csv = await downloadStoreCsv(token, sessionYearId, reportDate);
+    const { rows, excludedBranches, totalDataRows } = buildPaymentRows(csv);
 
-    const runTpnd = which === "all" || which === "tpnd";
-    const runStore = which === "all" || which === "store";
-
-    if (runTpnd) {
-      try {
-        const csv = await downloadReportCsv(token, "tpnd", sessionYearId, reportDate);
-        const rows = mapTpndRows(csv, reportDate);
-        // Replace-strategy: keep only the latest snapshot so the DB doesn't
-        // grow unbounded with 124k rows/day. Delete old, insert fresh.
-        await chunkedDeleteByDate(supabaseUrl, serviceKey, "historic_tpnd_rows", "report_date", reportDate);
-        if (rows.length > 0) {
-          await supabaseUpsert(supabaseUrl, serviceKey, "historic_tpnd_rows", rows);
-        }
-        await supabaseFetchLogUpsert(supabaseUrl, serviceKey, {
-          report_key: "tpnd_installment",
-          last_fetched_at: new Date().toISOString(),
-          last_report_date: reportDate,
-          last_row_count: rows.length,
-          last_status: "ok",
-          last_error: null,
-        });
-        results.tpnd = { rows: rows.length, ok: true };
-      } catch (e) {
-        results.tpnd = { ok: false, error: String(e.message || e).slice(0, 400) };
-        await supabaseFetchLogUpsert(supabaseUrl, serviceKey, {
-          report_key: "tpnd_installment",
-          last_fetched_at: new Date().toISOString(),
-          last_report_date: reportDate,
-          last_row_count: 0,
-          last_status: "failed",
-          last_error: String(e.message || e).slice(0, 400),
-        }).catch(() => {});
-      }
+    // Replace snapshot
+    await chunkedDeleteAll(supabaseUrl, serviceKey, "payment_report_rows");
+    if (rows.length > 0) {
+      await supabaseInsert(supabaseUrl, serviceKey, "payment_report_rows", rows);
     }
 
-    if (runStore) {
-      try {
-        const csv = await downloadReportCsv(token, "store", sessionYearId, reportDate);
-        const rows = mapStoreRows(csv, reportDate);
-        await chunkedDeleteByDate(supabaseUrl, serviceKey, "historic_store_rows", "report_date", reportDate);
-        if (rows.length > 0) {
-          await supabaseUpsert(supabaseUrl, serviceKey, "historic_store_rows", rows);
-        }
-        await supabaseFetchLogUpsert(supabaseUrl, serviceKey, {
-          report_key: "store_kit_wise",
-          last_fetched_at: new Date().toISOString(),
-          last_report_date: reportDate,
-          last_row_count: rows.length,
-          last_status: "ok",
-          last_error: null,
-        });
-        results.store = { rows: rows.length, ok: true };
-      } catch (e) {
-        results.store = { ok: false, error: String(e.message || e).slice(0, 400) };
-        await supabaseFetchLogUpsert(supabaseUrl, serviceKey, {
-          report_key: "store_kit_wise",
-          last_fetched_at: new Date().toISOString(),
-          last_report_date: reportDate,
-          last_row_count: 0,
-          last_status: "failed",
-          last_error: String(e.message || e).slice(0, 400),
-        }).catch(() => {});
-      }
-    }
+    await supabaseFetchLogUpsert(supabaseUrl, serviceKey, {
+      report_key: "payment_report",
+      last_fetched_at: new Date().toISOString(),
+      last_report_date: reportDate,
+      last_row_count: rows.length,
+      last_status: "ok",
+      last_error: null,
+    });
 
     res.writeHead(200, { ...cors, "Content-Type": "application/json" });
-    return res.end(JSON.stringify({ ok: true, ms: Date.now() - started, results }));
+    return res.end(JSON.stringify({
+      ok: true,
+      ms: Date.now() - started,
+      results: {
+        payment: {
+          ok: true,
+          csvRows: totalDataRows,
+          excludedBranchRows: excludedBranches,
+          uniqueErps: rows.length,
+        },
+      },
+    }));
   } catch (e) {
+    const msg = String(e.message || e).slice(0, 400);
+    await supabaseFetchLogUpsert(
+      supabaseUrl,
+      serviceKey || "missing",
+      {
+        report_key: "payment_report",
+        last_fetched_at: new Date().toISOString(),
+        last_report_date: null,
+        last_row_count: 0,
+        last_status: "failed",
+        last_error: msg,
+      }
+    ).catch(() => {});
     res.writeHead(500, { ...cors, "Content-Type": "application/json" });
-    return res.end(JSON.stringify({ ok: false, error: String(e.message || e).slice(0, 400), ms: Date.now() - started }));
+    return res.end(JSON.stringify({ ok: false, error: msg, ms: Date.now() - started }));
   }
 }
