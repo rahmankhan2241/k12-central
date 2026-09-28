@@ -273,7 +273,7 @@ export default async function handler(req, res) {
         const rows = mapTpndRows(csv, reportDate);
         // Replace-strategy: keep only the latest snapshot so the DB doesn't
         // grow unbounded with 124k rows/day. Delete old, insert fresh.
-        await supabaseDelete(supabaseUrl, serviceKey, "historic_tpnd_rows", "report_date", "neq." + reportDate);
+        await supabaseDelete(supabaseUrl, serviceKey, "historic_tpnd_rows", "report_date=neq." + reportDate);
         if (rows.length > 0) {
           await supabaseUpsert(supabaseUrl, serviceKey, "historic_tpnd_rows", rows, "report_date,enrollment_code,grade");
         }
@@ -303,7 +303,7 @@ export default async function handler(req, res) {
       try {
         const csv = await downloadReportCsv(token, "store", sessionYearId, reportDate);
         const rows = mapStoreRows(csv, reportDate);
-        await supabaseDelete(supabaseUrl, serviceKey, "historic_store_rows", "report_date", "neq." + reportDate);
+        await supabaseDelete(supabaseUrl, serviceKey, "historic_store_rows", "report_date=neq." + reportDate);
         if (rows.length > 0) {
           await supabaseUpsert(supabaseUrl, serviceKey, "historic_store_rows", rows, "report_date,enrollment_code,kit_name,paid_date,receipt_no");
         }
