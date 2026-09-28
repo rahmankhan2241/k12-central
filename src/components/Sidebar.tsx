@@ -30,6 +30,12 @@ const NAV_SECTIONS: { label: string; items: NavItem[] }[] = [
         badge: "New",
         keywords: ["grn", "goods", "receipt", "note", "pending", "report"],
       },
+      {
+        id: "historic-report",
+        label: "Historic Report",
+        icon: <ClockIcon />,
+        keywords: ["historic", "history", "tpnd", "store", "kit", "student", "paid", "installment"],
+      },
     ],
   },
   {

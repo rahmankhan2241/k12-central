@@ -1,13 +1,15 @@
 import { useState } from "react";
 import ColumnMappingCard from "../components/ColumnMappingCard";
 import BranchZbhCard from "../components/BranchZbhCard";
+import HistoricColumnsCard from "../components/HistoricColumnsCard";
 import { useReportConfig } from "../useReportConfig";
 import { ClockIcon, GearIcon } from "../icons";
 
-type SectionId = "pending-grn" | "future";
+type SectionId = "pending-grn" | "historic" | "future";
 
 const SECTIONS: { id: SectionId; label: string; available: boolean }[] = [
   { id: "pending-grn", label: "Pending GRN Related", available: true },
+  { id: "historic", label: "Historic Report Related", available: true },
   { id: "future", label: "More sections (coming soon)", available: false },
 ];
 
@@ -63,6 +65,7 @@ export default function SettingsPage() {
               <BranchZbhCard />
             </>
           )}
+          {section === "historic" && <HistoricColumnsCard />}
           {section === "future" && (
             <div className="card">
               <div className="placeholder">

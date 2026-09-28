@@ -2,6 +2,7 @@ import { useState } from "react";
 import Sidebar from "./components/Sidebar";
 import HomePage from "./pages/HomePage";
 import PendingGrnPage from "./pages/PendingGrnPage";
+import HistoricReportPage from "./pages/HistoricReportPage";
 import SettingsPage from "./pages/SettingsPage";
 import PlaceholderPage from "./pages/PlaceholderPage";
 import { K12Logo, MenuIcon } from "./icons";
@@ -62,9 +63,11 @@ export default function App() {
             {activePage === "pending-grn" && (
               <PendingGrnPage />
             )}
+            {activePage === "historic-report" && <HistoricReportPage />}
             {activePage === "settings" && <SettingsPage />}
             {activePage !== "home" &&
               activePage !== "pending-grn" &&
+              activePage !== "historic-report" &&
               activePage !== "settings" && (
                 <PlaceholderPage title={PAGE_TITLES[activePage] ?? activePage} />
               )}
