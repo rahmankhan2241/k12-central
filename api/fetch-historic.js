@@ -226,8 +226,15 @@ async function supabaseFetchLogUpsert(supabaseUrl, serviceKey, entry) {
 // ---------- Handler ----------
 export default async function handler(req, res) {
   const started = Date.now();
-  const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || "https://dovbrtzcxicfudskwyat.supabase.co";
-  const serviceKey = process.env.SUPABASE_SERVICE_KEY;
+  const supabaseUrl =
+    process.env.SUPABASE_URL ||
+    process.env.VITE_SUPABASE_URL ||
+    "https://dovbrtzcxicfudskwyat.supabase.co";
+  // Supabase↔Vercel integration provides SUPABASE_SERVICE_ROLE_KEY;
+  // a manually-set SUPABASE_SERVICE_KEY also works.
+  const serviceKey =
+    process.env.SUPABASE_SERVICE_KEY ||
+    process.env.SUPABASE_SERVICE_ROLE_KEY;
   const username = process.env.EDUVATE_USERNAME;
   const password = process.env.EDUVATE_PASSWORD;
   const sessionYearId = process.env.FINANCE_SESSION_YEAR_ID || "47";
