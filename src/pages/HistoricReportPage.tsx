@@ -18,6 +18,9 @@ import {
 
 type TabId = "payment" | "admission";
 
+// 2027-28 is listed but disabled — the session hasn't started at Eduvate yet.
+const ACADEMIC_YEARS: string[] = ["2026-27", "2025-26", "2024-25", "2027-28"];
+
 const TABS: { id: TabId; label: string }[] = [
   { id: "payment", label: "Payment Report" },
   { id: "admission", label: "Admission Report (coming soon)" },
@@ -60,6 +63,9 @@ export default function HistoricReportPage() {
     rows,
     dataLoading,
     loadError,
+    selectedYear,
+    setSelectedYear,
+    needsMigration,
   } = useHistoricGlobal();
   const { rows: mapping, setRows: setMappingRows, status: mappingStatus } = useBranchZbhMapping();
 
@@ -74,7 +80,7 @@ export default function HistoricReportPage() {
   const [exporting, setExporting] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
 
-  const log = logs["payment_report"];
+  const log = logs[`payment_report:${selectedYear}`] ?? logs["payment_report"];
   const busy = fetchPhase !== "idle" || dataLoading;
 
   // Zone per branch (Branch (Eduvate) lookup in the Branch & ZBH Mapping).
@@ -149,7 +155,7 @@ export default function HistoricReportPage() {
 
   const handleFetchNow = async () => {
     try {
-      await fetchNow("payment");
+      await fetchNow("payment", selectedYear);
     } catch {
       // surfaced via fetchError
     }
@@ -250,7 +256,7 @@ export default function HistoricReportPage() {
           />
           <div>
             <div className="fetch-title">
-              Payment Report
+              Payment Report · {selectedYear}
               {log?.last_row_count != null && log.last_row_count > 0 && (
                 <span className="row-count" style={{ marginLeft: 10 }}>
                   {log.last_row_count.toLocaleString("en-IN")} students
@@ -262,27 +268,53 @@ export default function HistoricReportPage() {
                 ? "Checking fetch history…"
                 : log
                   ? `Last fetched ${timeAgo(log.last_fetched_at)} (${fmtDateTime(log.last_fetched_at)})${
-                      log.last_report_date ? ` · data for ${log.last_report_date}` : ""
+                      log.last_report_date ? ` · data till ${log.last_report_date}` : ""
                     }`
-                  : "Never fetched yet — click Fetch Now to pull it from Eduvate."}
+                  : selectedYear === "2026-27"
+                    ? "Never fetched yet — click Fetch Now to pull it from Eduvate."
+                    : "Never fetched for this year — click Fetch Now (takes 30–60s)."}
               {log?.last_status === "failed" && log?.last_error && (
                 <span className="fetch-err"> · {log.last_error}</span>
               )}
             </div>
           </div>
         </div>
-        <button
-          className="btn primary"
-          onClick={handleFetchNow}
-          disabled={fetching}
-          title="Runs the whole pipeline: downloads from Eduvate, filters and dedupes, writes to Supabase, then refreshes this page"
-        >
-          <span className={fetching ? "spin" : ""} style={{ display: "inline-flex" }}>
-            <RefreshIcon size={14} />
-          </span>
-          {fetching ? "Running pipeline…" : "Fetch Now"}
-        </button>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <select
+            className="filter-select"
+            value={selectedYear}
+            onChange={(e) => setSelectedYear(e.target.value)}
+            aria-label="Academic year"
+            title="Switch academic year — each year's data is fetched and stored separately"
+          >
+            {ACADEMIC_YEARS.map((y) => (
+              <option key={y} value={y} disabled={y === "2027-28"}>
+                {y === "2027-28" ? `${y} (not started)` : y}
+              </option>
+            ))}
+          </select>
+          <button
+            className="btn primary"
+            onClick={handleFetchNow}
+            disabled={fetching}
+            title="Runs the whole pipeline for the selected year: downloads from Eduvate, filters and dedupes, writes to Supabase, then refreshes this page"
+          >
+            <span className={fetching ? "spin" : ""} style={{ display: "inline-flex" }}>
+              <RefreshIcon size={14} />
+            </span>
+            {fetching ? "Running pipeline…" : "Fetch Now"}
+          </button>
+        </div>
       </div>
+
+      {needsMigration && (
+        <div className="upload-error">
+          <AlertIcon size={14} />
+          Database setup needed: run <code>scripts/migration-session-year.sql</code> in the
+          Supabase SQL Editor to enable multiple academic years. Until then only 2026-27 data
+          is available.
+        </div>
+      )}
 
       {fetchError && (
         <div className="upload-error">

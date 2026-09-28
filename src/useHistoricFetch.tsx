@@ -9,7 +9,7 @@ import type { HistoricFetchLog } from "./types";
  * Lives ABOVE page components (mounted once in App), so:
  *  - a Fetch Now keeps running while the user navigates to other pages,
  *  - the loading overlay can be rendered globally,
- *  - the data cache survives page switches (no re-paging on every visit).
+ *  - the per-year data cache survives page switches (no re-paging on visits).
  */
 export type HistoricGlobalState = {
   logs: Record<string, HistoricFetchLog>;
@@ -18,13 +18,18 @@ export type HistoricGlobalState = {
   fetchError: string | null;
   fetchPhase: "idle" | "fetching" | "loading-data";
   fetchProgress: string;
+  /** Rows of the currently selected academic year. */
   rows: import("./types").PaymentReportRow[];
   dataLoading: boolean;
   loadError: string | null;
-  /** Runs the WHOLE pipeline: Eduvate → filter/dedupe → write Supabase → reload UI. */
-  fetchNow: (report: "payment" | "all") => Promise<unknown>;
+  selectedYear: string;
+  setSelectedYear: (year: string) => void;
+  /** True when the DB is missing the session_year column (migration pending). */
+  needsMigration: boolean;
+  /** Runs the WHOLE pipeline for the given year: Eduvate → filter/dedupe → Supabase → reload UI. */
+  fetchNow: (report: "payment" | "all", year?: string) => Promise<unknown>;
   reloadLogs: () => Promise<void>;
-  /** True once the full snapshot has been paged into memory. */
+  /** True once the selected year's snapshot has been paged into memory. */
   hasData: boolean;
 };
 
@@ -32,14 +37,15 @@ const Ctx = createContext<HistoricGlobalState | null>(null);
 
 const PAGE = 1000; // PostgREST hard cap per request
 const PARALLEL = 8; // concurrent page requests
+const DEFAULT_YEAR = "2026-27";
 
 /**
- * In-flight guard shared by every HistoricProvider instance.
+ * In-flight guard per year, shared by every HistoricProvider instance.
  * React StrictMode mounts effects twice, and a Fetch Now triggers another
  * load while one may still be running — without this, concurrent loads
  * double the requests and can overwrite each other's results.
  */
-let inflightLoad: Promise<void> | null = null;
+const inflightLoads = new Map<string, Promise<void>>();
 
 export function HistoricProvider({ children }: { children: ReactNode }) {
   const [logs, setLogs] = useState<Record<string, HistoricFetchLog>>({});
@@ -48,11 +54,14 @@ export function HistoricProvider({ children }: { children: ReactNode }) {
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [fetchPhase, setFetchPhase] = useState<"idle" | "fetching" | "loading-data">("idle");
   const [fetchProgress, setFetchProgress] = useState("");
-  const [rows, setRows] = useState<import("./types").PaymentReportRow[]>([]);
-  const [dataLoading, setDataLoading] = useState(false);
+  const [selectedYear, setSelectedYearState] = useState(DEFAULT_YEAR);
+  const [rowsByYear, setRowsByYear] = useState<Record<string, import("./types").PaymentReportRow[]>>(
+    {}
+  );
+  const [loadingYears, setLoadingYears] = useState<Record<string, boolean>>({});
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [needsMigration, setNeedsMigration] = useState(false);
   const mounted = useRef(true);
-  const loadedOnce = useRef(false);
   const reloadLogsRef = useRef<() => Promise<void>>(async () => {});
 
   const loadLogs = useCallback(async () => {
@@ -83,37 +92,61 @@ export function HistoricProvider({ children }: { children: ReactNode }) {
   }, [loadLogs]);
 
   /**
-   * Core snapshot load. Pages run in waves of PARALLEL requests
-   * (instead of ~96 sequential round-trips) — roughly 8x faster, same order.
+   * Core snapshot load for ONE academic year. Pages run in waves of PARALLEL
+   * requests (instead of ~96 sequential round-trips) — roughly 8x faster.
    */
-  const runLoad = useCallback(async () => {
+  const runLoad = useCallback(async (year: string) => {
     if (!isSupabaseConfigured) return;
-    setDataLoading(true);
+    setLoadingYears((m) => ({ ...m, [year]: true }));
     setFetchPhase("loading-data");
-    setFetchProgress("Loading payment data…");
+    setFetchProgress(`Loading ${year} payment data…`);
 
     /** Fresh builder per request — reusing one builder would share URL params across parallel calls. */
-    const pageQuery = (from: number, to: number, exactCount = false) =>
-      supabase
+    const pageQuery = (from: number, to: number, exactCount = false, withYearFilter = true) => {
+      let q = supabase
         .from("payment_report_rows")
-        .select("*", { count: exactCount ? "exact" : undefined })
+        .select("*", { count: exactCount ? "exact" : undefined });
+      if (withYearFilter) q = q.eq("session_year", year);
+      return q
         .order("first_paid_date", { ascending: true })
         .order("id", { ascending: true })
         .range(from, to);
+    };
 
     const errText = (e: unknown) =>
       typeof e === "object" && e !== null && "message" in e
         ? String((e as { message: unknown }).message)
         : String(e);
 
-    // 1) First page also carries the exact total so the UI can show progress.
-    const first = await pageQuery(0, PAGE - 1, true);
+    const finish = () => {
+      if (!mounted.current) return;
+      setLoadingYears((m) => ({ ...m, [year]: false }));
+      setFetchPhase("idle");
+      setFetchProgress("");
+    };
+
+    // 1) First page carries the exact total. If the session_year column is
+    //    missing (migration not run yet) we can still load the legacy 26-27
+    //    table contents — but ONLY for 26-27; other years must not show
+    //    another year's data.
+    let first = await pageQuery(0, PAGE - 1, true);
+    let yearFilter = true;
+    if (first.error && String(errText(first.error)).includes("session_year")) {
+      setNeedsMigration(true);
+      if (year !== DEFAULT_YEAR) {
+        setLoadError(
+          "The database is missing the session_year column — run scripts/migration-session-year.sql in Supabase first."
+        );
+        finish();
+        return;
+      }
+      yearFilter = false;
+      first = await pageQuery(0, PAGE - 1, true, false);
+    }
     if (!mounted.current) return;
     if (first.error) {
       setLoadError(errText(first.error));
-      setDataLoading(false);
-      setFetchPhase("idle");
-      setFetchProgress("");
+      finish();
       return;
     }
     const total = first.count ?? (first.data as import("./types").PaymentReportRow[]).length;
@@ -129,89 +162,94 @@ export function HistoricProvider({ children }: { children: ReactNode }) {
         for (let p = start; p < Math.min(start + PARALLEL, totalPages); p++) {
           // Promise.resolve() turns the supabase thenable into a real Promise.
           wave.push(
-            Promise.resolve(pageQuery(p * PAGE, (p + 1) * PAGE - 1)).then((r) => {
-              if (r.error) throw r.error;
-              return (r.data ?? []) as import("./types").PaymentReportRow[];
-            })
+            Promise.resolve(pageQuery(p * PAGE, (p + 1) * PAGE - 1, false, yearFilter)).then(
+              (r) => {
+                if (r.error) throw r.error;
+                return (r.data ?? []) as import("./types").PaymentReportRow[];
+              }
+            )
           );
         }
         const results = await Promise.all(wave); // any failure rejects here
         if (!mounted.current) return;
         all.push(...results.flat());
         setFetchProgress(
-          `Loaded ${all.length.toLocaleString("en-IN")} of ${total.toLocaleString("en-IN")} students…`
+          `Loaded ${all.length.toLocaleString("en-IN")} of ${total.toLocaleString("en-IN")} ${year} students…`
         );
       }
       if (!mounted.current) return;
-      setRows(all);
+      setRowsByYear((m) => ({ ...m, [year]: all }));
       setLoadError(null);
-      loadedOnce.current = true;
     } catch (e) {
       if (!mounted.current) return;
       setLoadError(errText(e));
     } finally {
-      if (mounted.current) {
-        setDataLoading(false);
-        setFetchPhase("idle");
-        setFetchProgress("");
-      }
+      finish();
     }
   }, []);
 
   /**
-   * Public loader with a singleton guard. While a load is running, extra
-   * callers join it (StrictMode double-invokes the app-start effect) —
+   * Public per-year loader with a singleton guard. While a year's load is
+   * running, extra callers join it (StrictMode double-invokes effects) —
    * except Fetch Now, which waits for the current pass and then runs a
    * fresh one, because the rows it just wrote may have landed mid-flight
    * of the earlier load.
    */
-  const loadAllRows = useCallback(
-    async (opts?: { fresh?: boolean }) => {
-      if (inflightLoad) {
-        await inflightLoad.catch(() => {});
-        if (!opts?.fresh) return; // joined an equivalent, already-current load
-      }
-      const p = runLoad().finally(() => {
-        if (inflightLoad === p) inflightLoad = null;
-      });
-      inflightLoad = p;
-      await p.catch(() => {});
-    },
-    [runLoad]
-  );
+  const loadAllRows = useCallback(async (year: string, opts?: { fresh?: boolean }) => {
+    const inflight = inflightLoads.get(year);
+    if (inflight) {
+      await inflight.catch(() => {});
+      if (!opts?.fresh) return; // joined an equivalent, already-current load
+    }
+    const p = runLoad(year).finally(() => {
+      if (inflightLoads.get(year) === p) inflightLoads.delete(year);
+    });
+    inflightLoads.set(year, p);
+    await p.catch(() => {});
+  }, [runLoad]);
 
-  // Load data once on app start (background — user can navigate freely)
+  // Load the current year's data once on app start (background — user can navigate freely)
   useEffect(() => {
-    void loadAllRows();
+    void loadAllRows(DEFAULT_YEAR);
   }, [loadAllRows]);
 
+  const setSelectedYear = useCallback(
+    (year: string) => {
+      setSelectedYearState(year);
+      // Load on demand; cached years switch instantly.
+      void loadAllRows(year);
+    },
+    [loadAllRows]
+  );
+
   /**
-   * Runs the whole pipeline end-to-end and AWAITS every step:
-   *  1. Serverless: login to Eduvate → download CSV → filter/dedupe →
-   *     write the new snapshot into Supabase (old rows removed).
-   *  2. Reload fetch logs (freshness banner).
-   *  3. Reload all rows from Supabase so the UI shows the fresh data.
+   * Runs the whole pipeline for one academic year and AWAITS every step:
+   *  1. Serverless: login to Eduvate → download that session's CSV →
+   *     filter/dedupe → write the year-tagged snapshot (old rows removed).
+   *  2. Reload fetch logs (per-year freshness banner).
+   *  3. Reload that year's rows so the UI shows the fresh data.
    * Only then does the button stop spinning.
    */
   const fetchNow = useCallback(
-    async (report: "payment" | "all") => {
+    async (report: "payment" | "all", year?: string) => {
+      const y = year ?? selectedYear;
       setFetching(true);
       setFetchError(null);
       setFetchPhase("fetching");
       setFetchProgress(
-        "Running the full pipeline — downloading from Eduvate, filtering and writing to Supabase (30–60s)…"
+        `Running the full ${y} pipeline — downloading from Eduvate, filtering and writing to Supabase (30–60s)…`
       );
       try {
-        const res = await fetch(`/api/fetch-historic?report=${report}`);
+        const res = await fetch(`/api/fetch-historic?report=${report}&year=${encodeURIComponent(y)}`);
         const body = await res.json().catch(() => ({}));
         if (!res.ok || body.ok === false) {
           throw new Error(body.error || `Fetch failed (${res.status})`);
         }
         if (mounted.current) {
-          setFetchProgress("Eduvate data written to Supabase — refreshing the report…");
+          setFetchProgress(`${y} data written to Supabase — refreshing the report…`);
         }
         await reloadLogsRef.current();
-        await loadAllRows({ fresh: true }); // UI shows fresh rows before the button finishes
+        await loadAllRows(y, { fresh: true }); // UI shows fresh rows before the button finishes
         return body;
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
@@ -225,8 +263,11 @@ export function HistoricProvider({ children }: { children: ReactNode }) {
         setFetching(false);
       }
     },
-    [loadAllRows]
+    [loadAllRows, selectedYear]
   );
+
+  const rows = rowsByYear[selectedYear] ?? [];
+  const dataLoading = Boolean(loadingYears[selectedYear]);
 
   const value: HistoricGlobalState = {
     logs,
@@ -238,9 +279,12 @@ export function HistoricProvider({ children }: { children: ReactNode }) {
     rows,
     dataLoading,
     loadError,
+    selectedYear,
+    setSelectedYear,
+    needsMigration,
     fetchNow,
     reloadLogs: loadLogs,
-    hasData: loadedOnce.current,
+    hasData: rowsByYear[selectedYear] != null,
   };
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;

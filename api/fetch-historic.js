@@ -2,36 +2,55 @@
  * Vercel Serverless Function — Payment Report fetcher (Historic Report).
  *
  * Triggered by:
- *  - Vercel Cron daily at 02:30 UTC (8:00 AM IST)
- *  - Manual "Fetch Now" from the Historic Report page (?report=payment)
+ *  - Vercel Cron daily at 02:30 UTC (8:00 AM IST) — 26-27 (current session)
+ *  - Manual "Fetch Now" from the Historic Report page (?report=payment&year=YYYY-YY)
  *
- * This IS the whole pipeline — nothing is read from Supabase to build data:
+ * Academic years: the UI selects 2024-25 / 2025-26 / 2026-27; each maps to a
+ * different Eduvate finance_session_year_id and report date (see SESSIONS).
+ *
+ * Pipeline (per selected year):
  *  1. Log in to Eduvate with env credentials
- *  2. Download the Store Report CSV (~190k rows) for today
+ *  2. Download the Store Report CSV for that session (live year: today;
+ *     closed years: session-end date — the report is cumulative "till date")
  *  3. Exclude branches containing "taproot" (case-insensitive) or "PU" (case-sensitive)
  *  4. Sort by Paid Date ascending
  *  5. Dedupe by Enrollment Code keeping the FIRST payment of each ERP
  *  6. Keep only: Branch | Enrollment Code | Grade | Student Type | First Paid Date
- *     (Student Type: ERP starts with "26" = New for FY 26-27, otherwise Old)
- *  7. Write the new snapshot to Supabase, replacing the previous one
+ *     (Student Type: ERP starts with the session's admission prefix = New)
+ *  7. Write the snapshot to Supabase tagged with session_year, replacing only
+ *     that year's previous snapshot
  *
- * Snapshot replacement is insert-first, delete-second:
- *  - every inserted row is stamped with this run's fetched_at
- *  - after all inserts succeed, old rows are removed with a SINGLE
- *    `fetched_at=neq.<run timestamp>` delete (no chunked select+delete)
+ * Snapshot replacement is insert-first, delete-second, scoped to the year:
+ *  - every inserted row is stamped with this run's fetched_at + session_year
+ *  - after all inserts succeed, that year's old rows are removed with a SINGLE
+ *    `fetched_at=neq.<ts>&session_year=eq.<year>` delete
  *  - if anything fails before the delete, the old snapshot stays intact
  *
  * Zone is NOT stored here — the UI joins it live from the Branch & ZBH
  * mapping (Branch (Eduvate) lookup) so Add/Skip is instant.
  *
  * Env vars: EDUVATE_USERNAME, EDUVATE_PASSWORD, SUPABASE_URL,
- * SUPABASE_SERVICE_KEY (or SUPABASE_SERVICE_ROLE_KEY), FINANCE_SESSION_YEAR_ID (default 47).
+ * SUPABASE_SERVICE_KEY (or SUPABASE_SERVICE_ROLE_KEY).
  */
 
 const FINANCE_BASE = "https://orchids.finance.letseduvate.com/qbox/apiV1";
 const ERP_BASE = "https://orchids.letseduvate.com/qbox";
-const ADMISSION_YEAR_PREFIX = "26"; // FY 2026-27
 const INSERT_WAVE = 5; // concurrent insert/delete requests
+
+/**
+ * Academic sessions — finance_session_year_id + report date confirmed against
+ * the Eduvate Historic Reports page (year IDs are NOT sequential).
+ * Closed sessions need a date INSIDE that session; the session-end date gives
+ * the complete cumulative year ("data of all branches till <date>").
+ * admissionPrefix: ERP codes starting with this are "New" students.
+ * 2027-28 is intentionally absent until Eduvate opens that session.
+ */
+const SESSIONS = {
+  "2026-27": { eduvateId: 47, admissionPrefix: "26", live: true },
+  "2025-26": { eduvateId: 42, admissionPrefix: "25", reportDate: "2026-03-31" },
+  "2024-25": { eduvateId: 9, admissionPrefix: "24", reportDate: "2025-03-31" },
+};
+const DEFAULT_YEAR = "2026-27";
 
 // ---------- tiny CSV parser (no deps) ----------
 function parseCsv(text) {
@@ -103,15 +122,15 @@ function normalizePaidDate(s) {
   return v; // leave as-is; sorts after real dates
 }
 
-function studentType(enrollmentCode) {
+function studentType(enrollmentCode, admissionPrefix) {
   const code = String(enrollmentCode ?? "").trim();
-  return code.startsWith(ADMISSION_YEAR_PREFIX) ? "New" : "Old";
+  return code.startsWith(admissionPrefix) ? "New" : "Old";
 }
 
 /**
  * Core transform: CSV text → first-payment-per-ERP rows (stamped with fetchedAt).
  */
-function buildPaymentRows(csvText, fetchedAt) {
+function buildPaymentRows(csvText, fetchedAt, sessionYear, admissionPrefix) {
   const raw = parseCsv(csvText);
   if (raw.length < 2) return { rows: [], excludedBranches: 0, totalDataRows: 0 };
 
@@ -158,9 +177,10 @@ function buildPaymentRows(csvText, fetchedAt) {
       branch: k.branch,
       enrollment_code: k.enrollment_code,
       grade: k.grade,
-      student_type: studentType(k.enrollment_code),
+      student_type: studentType(k.enrollment_code, admissionPrefix),
       first_paid_date: k.paidRaw,
       fetched_at: fetchedAt,
+      session_year: sessionYear,
     });
   }
 
@@ -196,10 +216,25 @@ async function supabaseInsertWave(supabaseUrl, serviceKey, table, rows, waveSize
   }
 }
 
-/** Remove every row from a previous run in ONE request via fetched_at=neq.<ts>. */
-async function supabaseDeleteOldGeneration(supabaseUrl, serviceKey, table, fetchedAt) {
+/** Does payment_report_rows have the session_year column yet? */
+async function supabaseHasSessionYearColumn(supabaseUrl, serviceKey) {
   const res = await fetch(
-    `${supabaseUrl}/rest/v1/${table}?fetched_at=neq.${encodeURIComponent(fetchedAt)}`,
+    `${supabaseUrl}/rest/v1/payment_report_rows?select=id&session_year=eq.probe&limit=1`,
+    { headers: { apikey: serviceKey, Authorization: `Bearer ${serviceKey}` } }
+  );
+  if (res.ok) return true;
+  const body = await res.text().catch(() => "");
+  // 42703 = undefined_column → column missing. Any other failure is treated as
+  // "column present" so real errors surface later with their proper message.
+  return !(res.status === 400 && (body.includes("42703") || body.includes("session_year")));
+}
+
+/** Remove every row from a previous run in ONE request via fetched_at=neq.<ts>. */
+async function supabaseDeleteOldGeneration(supabaseUrl, serviceKey, table, fetchedAt, sessionYear) {
+  let qs = `fetched_at=neq.${encodeURIComponent(fetchedAt)}`;
+  if (sessionYear) qs += `&session_year=eq.${encodeURIComponent(sessionYear)}`;
+  const res = await fetch(
+    `${supabaseUrl}/rest/v1/${table}?${qs}`,
     {
       method: "DELETE",
       headers: {
@@ -244,7 +279,6 @@ export default async function handler(req, res) {
     process.env.SUPABASE_SERVICE_ROLE_KEY;
   const username = process.env.EDUVATE_USERNAME;
   const password = process.env.EDUVATE_PASSWORD;
-  const sessionYearId = process.env.FINANCE_SESSION_YEAR_ID || "47";
 
   const cors = {
     "Access-Control-Allow-Origin": "*",
@@ -264,12 +298,37 @@ export default async function handler(req, res) {
       return res.end(JSON.stringify({ error: "Unauthorized cron call" }));
     }
 
-    const reportDate = new Date().toISOString().slice(0, 10);
+    // Academic year from ?year= (validated) — used for source session, row
+    // tagging, deletion scope and the per-year fetch-log key.
+    const requested = (req.query?.year ?? req.query?.session ?? "").toString();
+    const sessionYear = SESSIONS[requested] ? requested : DEFAULT_YEAR;
+    const session = SESSIONS[sessionYear];
+
+    const reportDate = session.reportDate ?? new Date().toISOString().slice(0, 10);
     const fetchedAt = new Date().toISOString();
+    const logKey = `payment_report:${sessionYear}`;
 
     const token = await eduvateLogin(username, password);
-    const csv = await downloadStoreCsv(token, sessionYearId, reportDate);
-    const { rows, excludedBranches, totalDataRows } = buildPaymentRows(csv, fetchedAt);
+    const csv = await downloadStoreCsv(token, session.eduvateId, reportDate);
+    const { rows, excludedBranches, totalDataRows } = buildPaymentRows(
+      csv,
+      fetchedAt,
+      sessionYear,
+      session.admissionPrefix
+    );
+
+    // If the session_year column hasn't been added yet (migration pending),
+    // fall back to legacy behaviour: store rows without the tag and scope
+    // deletes without it. Keeps the cron working during the transition.
+    const hasYearColumn = await supabaseHasSessionYearColumn(supabaseUrl, serviceKey);
+    if (!hasYearColumn && sessionYear !== DEFAULT_YEAR) {
+      // Without the column the table can only hold ONE year at a time —
+      // a historical fetch would wipe the 26-27 snapshot. Refuse instead.
+      throw new Error(
+        "session_year column is missing — run scripts/migration-session-year.sql in the Supabase SQL Editor before fetching historical years"
+      );
+    }
+    const insertRows = hasYearColumn ? rows : rows.map(({ session_year, ...r }) => r);
 
     // Refuse to wipe the snapshot with an empty transform (bad CSV, schema drift…).
     if (rows.length === 0) {
@@ -280,12 +339,12 @@ export default async function handler(req, res) {
 
     // Insert the new generation FIRST (old data untouched on failure)…
     try {
-      await supabaseInsertWave(supabaseUrl, serviceKey, "payment_report_rows", rows);
+      await supabaseInsertWave(supabaseUrl, serviceKey, "payment_report_rows", insertRows);
     } catch (e) {
       // Roll back the partial new generation so the table keeps ONLY the
       // previous complete snapshot (no duplicate rows from the half-write).
       await fetch(
-        `${supabaseUrl}/rest/v1/payment_report_rows?fetched_at=eq.${encodeURIComponent(fetchedAt)}`,
+        `${supabaseUrl}/rest/v1/payment_report_rows?fetched_at=eq.${encodeURIComponent(fetchedAt)}&session_year=eq.${encodeURIComponent(sessionYear)}`,
         {
           method: "DELETE",
           headers: {
@@ -298,11 +357,28 @@ export default async function handler(req, res) {
       throw e;
     }
 
-    // …then drop every row from previous runs in one request.
-    await supabaseDeleteOldGeneration(supabaseUrl, serviceKey, "payment_report_rows", fetchedAt);
+    // …then drop every row from previous runs of THIS year in one request.
+    if (hasYearColumn) {
+      await supabaseDeleteOldGeneration(
+        supabaseUrl,
+        serviceKey,
+        "payment_report_rows",
+        fetchedAt,
+        sessionYear
+      );
+    } else {
+      // Legacy table: only 26-27 data lives here, so replace it wholesale.
+      await supabaseDeleteOldGeneration(
+        supabaseUrl,
+        serviceKey,
+        "payment_report_rows",
+        fetchedAt,
+        null
+      );
+    }
 
     await supabaseFetchLogUpsert(supabaseUrl, serviceKey, {
-      report_key: "payment_report",
+      report_key: logKey,
       last_fetched_at: new Date().toISOString(),
       last_report_date: reportDate,
       last_row_count: rows.length,
@@ -314,6 +390,7 @@ export default async function handler(req, res) {
     return res.end(JSON.stringify({
       ok: true,
       ms: Date.now() - started,
+      session_year: sessionYear,
       results: {
         payment: {
           ok: true,
@@ -325,11 +402,15 @@ export default async function handler(req, res) {
     }));
   } catch (e) {
     const msg = String(e.message || e).slice(0, 400);
+    // Which year failed? ?year= if valid, else the default — must match the
+    // log key the success path would have used.
+    const failYearRaw = (req.query?.year ?? req.query?.session ?? "").toString();
+    const failYear = SESSIONS[failYearRaw] ? failYearRaw : DEFAULT_YEAR;
     await supabaseFetchLogUpsert(
       supabaseUrl,
       serviceKey || "missing",
       {
-        report_key: "payment_report",
+        report_key: `payment_report:${failYear}`,
         last_fetched_at: new Date().toISOString(),
         last_report_date: null,
         last_row_count: 0,
