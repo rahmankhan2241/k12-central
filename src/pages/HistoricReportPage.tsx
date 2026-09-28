@@ -48,7 +48,7 @@ function timeAgo(iso: string | null | undefined): string {
 export default function HistoricReportPage() {
   const [tab, setTab] = useState<TabId>("payment");
   const { logs, loading: logsLoading, fetching, fetchError, fetchNow } = useHistoricFetch();
-  const { rows: mapping, status: mappingStatus } = useBranchZbhMapping();
+  const { rows: mapping, setRows: setMappingRows, status: mappingStatus } = useBranchZbhMapping();
 
   const [search, setSearch] = useState("");
   const [branch, setBranch] = useState("");
@@ -59,6 +59,7 @@ export default function HistoricReportPage() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [skippedBranches, setSkippedBranches] = useState<Set<string>>(new Set());
   const [manualZone, setManualZone] = useState<Record<string, Partial<BranchZbhMapping>>>({});
+  const [zoneHint, setZoneHint] = useState<Record<string, string>>({});
 
   const log = logs["payment_report"];
 
@@ -96,7 +97,9 @@ export default function HistoricReportPage() {
     };
   }, [tab, log?.last_fetched_at]);
 
-  // Zone per branch (Branch (Eduvate) lookup in the Branch & ZBH Mapping)
+  // Zone per branch (Branch (Eduvate) lookup in the Branch & ZBH Mapping).
+  // In-progress typing in the unmapped card deliberately does NOT count here —
+  // otherwise the row would vanish mid-typing. Only saved mapping rows matter.
   const zoneByBranch = useMemo(() => {
     const map = new Map<string, string>();
     for (const r of rows) {
@@ -104,12 +107,8 @@ export default function HistoricReportPage() {
       const m = findZoneByBranchEduvate(mapping, r.branch);
       map.set(r.branch, m ? m.zone || "(No zone)" : "");
     }
-    // Manual additions win
-    for (const [b, vals] of Object.entries(manualZone)) {
-      if (vals.zone) map.set(b, vals.zone);
-    }
     return map;
-  }, [rows, mapping, manualZone]);
+  }, [rows, mapping]);
 
   const unmappedBranches = useMemo(() => {
     const set = new Set<string>();
@@ -166,7 +165,10 @@ export default function HistoricReportPage() {
 
   const addZoneForBranch = async (b: string) => {
     const vals = manualZone[b] ?? {};
-    if (!vals.zone || !vals.zone.trim()) return;
+    if (!vals.zone || !vals.zone.trim()) {
+      setZoneHint((h) => ({ ...h, [b]: "Type a Zone first — ZBH is optional." }));
+      return;
+    }
     const existing = findZoneByBranchEduvate(mapping, b);
     const newRow: BranchZbhMapping = {
       zone: vals.zone.trim(),
@@ -174,21 +176,17 @@ export default function HistoricReportPage() {
       branchEduvate: b,
       zbh: vals.zbh?.trim() ?? existing?.zbh ?? "",
     };
-    // add to saved mapping via hook setter (persists to Supabase)
-    // useBranchZbhMapping exposes setRows through the same hook used in Settings
-    setManualZone({ ...manualZone, [b]: { ...vals, zone: newRow.zone } });
-    // persist through the shared hook:
-    await persistMappingRow(newRow);
+    // Save to the shared mapping (persists to Supabase + localStorage cache).
+    setMappingRows([...mapping, newRow]);
+    // Clear the in-progress inputs; the row leaves the unmapped list because
+    // the saved mapping now contains it.
+    setManualZone(({ [b]: _drop, ...rest }) => rest);
+    setZoneHint(({ [b]: _drop, ...rest }) => rest);
     setSkippedBranches((s) => {
       const next = new Set(s);
       next.delete(b);
       return next;
     });
-  };
-
-  const { setRows: setMappingRows } = useBranchZbhMapping();
-  const persistMappingRow = async (newRow: BranchZbhMapping) => {
-    setMappingRows([...mapping, newRow]);
   };
 
   return (
@@ -299,9 +297,10 @@ export default function HistoricReportPage() {
                       <input
                         placeholder="Zone"
                         value={vals.zone ?? ""}
-                        onChange={(e) =>
-                          setManualZone({ ...manualZone, [b]: { ...vals, zone: e.target.value } })
-                        }
+                        onChange={(e) => {
+                          setManualZone({ ...manualZone, [b]: { ...vals, zone: e.target.value } });
+                          if (zoneHint[b]) setZoneHint(({ [b]: _drop, ...rest }) => rest);
+                        }}
                       />
                       <input
                         placeholder="ZBH (optional)"
@@ -321,6 +320,7 @@ export default function HistoricReportPage() {
                       >
                         Skip
                       </button>
+                      {zoneHint[b] && <span className="zone-hint">{zoneHint[b]}</span>}
                     </div>
                   );
                 })}
