@@ -234,17 +234,23 @@ export default function HistoricReportPage() {
     [rows, zoneByBranch, isIcse]
   );
 
-  // Excel-style options: every dropdown ALWAYS lists all values present in
-  // the year's data, regardless of other filters. What's selected filters the
-  // report; what's not stays visible to select. Selections from other filters
-  // that don't overlap simply produce an empty result — like Excel.
+  const includesAny = (sel: string[], v: string) => sel.length === 0 || sel.includes(v);
+
+  // Excel-style cascading: each dropdown is narrowed by every OTHER filter
+  // (Bangalore selected → Branches lists only Bangalore branches), but always
+  // shows ALL of its own values so a deselected one stays visible to re-select.
   const gradeOptions = useMemo(() => {
     const set = new Set<string>();
-    for (const r of enriched) if (r.grade) set.add(r.grade);
+    for (const r of enriched) {
+      if (!r.grade) continue;
+      if (!includesAny(zoneFilter, r.zone)) continue;
+      if (!includesAny(branch, r.branch)) continue;
+      if (!includesAny(segment, r.segment)) continue;
+      set.add(r.grade);
+    }
     return [...set].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
-  }, [enriched]);
-
-  const includesAny = (sel: string[], v: string) => sel.length === 0 || sel.includes(v);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enriched, zoneFilter.join("|"), branch.join("|"), segment.join("|")]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -268,18 +274,28 @@ export default function HistoricReportPage() {
   const branchOptions = useMemo(() => {
     const set = new Set<string>();
     enriched.forEach((r) => {
-      if (r.branch) set.add(r.branch);
+      if (!r.branch) return;
+      if (!includesAny(zoneFilter, r.zone)) return;
+      if (!includesAny(segment, r.segment)) return;
+      if (!includesAny(grade, r.grade)) return;
+      set.add(r.branch);
     });
     return [...set].sort((a, b) => a.localeCompare(b));
-  }, [enriched]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enriched, zoneFilter.join("|"), segment.join("|"), grade.join("|")]);
 
   const zoneOptionsFiltered = useMemo(() => {
     const set = new Set<string>();
     for (const r of enriched) {
-      if (r.zone && r.zone !== "(Unmapped)") set.add(r.zone);
+      if (!r.zone || r.zone === "(Unmapped)") continue;
+      if (!includesAny(branch, r.branch)) continue;
+      if (!includesAny(segment, r.segment)) continue;
+      if (!includesAny(grade, r.grade)) continue;
+      set.add(r.zone);
     }
     return [...set].sort((a, b) => a.localeCompare(b));
-  }, [enriched]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enriched, branch.join("|"), segment.join("|"), grade.join("|")]);
 
   const handleFetchNow = async () => {
     try {
