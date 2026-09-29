@@ -26,7 +26,11 @@
  *   → { ok:true, type:"tool_request", tool, args, model }
  *     | { ok:true, type:"answer", answer, model, toolsUsed }
  *
- * Env: NVIDIA_API_KEY (required), NVIDIA_MODEL / NVIDIA_MODELS / NVIDIA_BASE_URL (optional).
+ * Env (provider chain — first available is used, later ones are fallbacks):
+ *   GROQ_API_KEY     — Groq (api.groq.com, OpenAI-compatible) — fastest, tried first
+ *   NVIDIA_API_KEY   — NVIDIA NIM — fallback
+ *   AI_API_KEY + AI_BASE_URL (+ AI_MODEL, AI_MODELS) — any OpenAI-compatible service
+ *   AI_MODEL / AI_MODELS / NVIDIA_MODEL(S) — model overrides (comma-separated lists)
  */
 
 // Vercel: allow up to 60s per invocation (the client loops tool rounds as
@@ -40,21 +44,48 @@ const MAX_TOOL_ROUNDS = 6;
 // Per-NIM-attempt timeout. NIM free tier intermittently queues requests for
 // minutes; on timeout we fall through to the next candidate model rather
 // than failing the whole request.
-const REQUEST_TIMEOUT_MS = 45_000;
+const REQUEST_TIMEOUT_MS = 20_000;
 
-const DEFAULT_MODELS = [
-  "openai/gpt-oss-20b",
-  "deepseek-ai/deepseek-v4.1-flash",
-];
+/**
+ * Provider chain: each provider contributes (baseUrl, apiKey, models[]).
+ * Providers with a key are tried in order; models are tried within each
+ * provider; timeouts/4xx fall through to the next candidate.
+ */
+const GROQ_BASE = "https://api.groq.com/openai/v1";
+const NVIDIA_BASE = "https://integrate.api.nvidia.com/v1";
 
-function modelCandidates() {
-  const single = process.env.NVIDIA_MODEL;
-  const list = process.env.NVIDIA_MODELS;
-  return [...new Set([
-    ...(single ? [single] : []),
-    ...(list ? list.split(",").map((s) => s.trim()).filter(Boolean) : []),
-    ...DEFAULT_MODELS,
-  ])];
+const GROQ_MODELS = ["openai/gpt-oss-20b", "qwen/qwen3.8-27b"];
+const NVIDIA_MODELS_DEFAULT = ["openai/gpt-oss-20b", "deepseek-ai/deepseek-v4.1-flash"];
+
+function providerChain() {
+  const chain = [];
+  const envList = (v) => (v ? v.split(",").map((s) => s.trim()).filter(Boolean) : null);
+
+  if (process.env.GROQ_API_KEY) {
+    chain.push({
+      name: "groq",
+      baseUrl: GROQ_BASE,
+      apiKey: process.env.GROQ_API_KEY,
+      models: [...(envList(process.env.AI_MODELS) ?? []), ...(envList(process.env.GROQ_MODEL) ?? []), ...GROQ_MODELS],
+    });
+  }
+  if (process.env.NVIDIA_API_KEY || process.env.NVIDIA_NIM_API_KEY) {
+    chain.push({
+      name: "nvidia",
+      baseUrl: (process.env.NVIDIA_BASE_URL || NVIDIA_BASE).replace(/\/+$/, ""),
+      apiKey: process.env.NVIDIA_API_KEY || process.env.NVIDIA_NIM_API_KEY,
+      models: [...(envList(process.env.NVIDIA_MODEL) ?? []), ...NVIDIA_MODELS_DEFAULT],
+    });
+  }
+  if (process.env.AI_API_KEY && process.env.AI_BASE_URL) {
+    chain.push({
+      name: "custom",
+      baseUrl: process.env.AI_BASE_URL.replace(/\/+$/, ""),
+      apiKey: process.env.AI_API_KEY,
+      models: envList(process.env.AI_MODEL) ?? envList(process.env.AI_MODELS) ?? [],
+    });
+  }
+  return chain;
 }
 
 /** Some Nemotron models emit <think>…</think> reasoning — strip it. */
@@ -131,8 +162,6 @@ function buildSystemPrompt(source, today, toolRoundsUsed) {
 
 function parseToolCall(text) {
   const raw = String(text ?? "").trim();
-  if (!raw.startsWith("{")) return null;
-  // Tolerate ```json fences or stray prose around the object.
   const start = raw.indexOf("{");
   const end = raw.lastIndexOf("}");
   if (start === -1 || end <= start) return null;
@@ -142,9 +171,19 @@ function parseToolCall(text) {
   } catch {
     return null;
   }
-  if (!obj || typeof obj.tool !== "string") return null;
-  const args = obj.args && typeof obj.args === "object" && !Array.isArray(obj.args) ? obj.args : {};
-  return { tool: obj.tool, args };
+  if (!obj || typeof obj !== "object") return null;
+  // Our instructed format: {"tool":"query_payments","args":{...}}
+  if (typeof obj.tool === "string") {
+    let args = obj.args && typeof obj.args === "object" && !Array.isArray(obj.args) ? obj.args : {};
+    // Some models echo the envelope inside args — unwrap one level.
+    if (typeof args.tool === "string" && args.args && typeof args.args === "object") args = args.args;
+    return { tool: obj.tool, args };
+  }
+  // Native tool-call format some models emit: {"name":"query_payments","arguments":{...}}
+  if (typeof obj.name === "string" && obj.arguments && typeof obj.arguments === "object") {
+    return { tool: obj.name.replace(/^tool_/, ""), args: obj.arguments };
+  }
+  return null;
 }
 
 function sanitizeMessages(messages) {
@@ -177,7 +216,7 @@ function sanitizeToolResults(toolResults) {
 // NIM call with model fallback
 // ---------------------------------------------------------------------------
 
-async function callNim({ baseUrl, apiKey, model, systemPrompt, messages, signal }) {
+async function callChat({ baseUrl, apiKey, model, systemPrompt, messages, signal }) {
   const res = await fetch(`${baseUrl}/chat/completions`, {
     method: "POST",
     signal,
@@ -200,7 +239,18 @@ async function callNim({ baseUrl, apiKey, model, systemPrompt, messages, signal 
   });
   if (!res.ok) {
     const errBody = await res.text().catch(() => "");
-    const err = new Error(`NVIDIA API ${res.status} (${model}): ${errBody.slice(0, 200)}`);
+    // Groq's gpt-oss emits native tool calls even when tools aren't declared;
+    // the API then 400s with tool_use_failed but includes the raw generation.
+    // Recover it so the agent loop can proceed.
+    const fg = /"failed_generation"\s*:\s*"((?:[^"\\]|\\.)*)"/.exec(errBody);
+    if (fg) {
+      try {
+        return JSON.parse(`"${fg[1]}"`); // unescape \n, \" etc.
+      } catch {
+        /* fall through to normal error */
+      }
+    }
+    const err = new Error(`AI API ${res.status} (${model}): ${errBody.slice(0, 200)}`);
     err.status = res.status;
     throw err;
   }
@@ -227,11 +277,11 @@ export default async function handler(req, res) {
     return res.end(JSON.stringify({ ok: false, error: "POST only" }));
   }
 
-  const apiKey = process.env.NVIDIA_API_KEY || process.env.NVIDIA_NIM_API_KEY;
-  if (!apiKey) {
+  const chain = providerChain();
+  if (chain.length === 0) {
     res.writeHead(500, { ...cors, "Content-Type": "application/json" });
     return res.end(
-      JSON.stringify({ ok: false, error: "NVIDIA_API_KEY env var is not set — add it in Vercel → Settings → Environment Variables." })
+      JSON.stringify({ ok: false, error: "No AI provider key is configured — set GROQ_API_KEY (recommended) or NVIDIA_API_KEY in Vercel → Settings → Environment Variables." })
     );
   }
 
@@ -250,7 +300,6 @@ export default async function handler(req, res) {
       return res.end(JSON.stringify({ ok: false, error: "Tool budget exhausted." }));
     }
 
-    const baseUrl = (process.env.NVIDIA_BASE_URL || "https://integrate.api.nvidia.com/v1").replace(/\/+$/, "");
     const today = new Date().toLocaleDateString("en-IN", { day: "numeric", month: "long", year: "numeric" });
     const systemPrompt = buildSystemPrompt(source, today, toolResults.length);
 
@@ -268,45 +317,54 @@ export default async function handler(req, res) {
       });
     }
 
-    const candidates = modelCandidates();
     let lastError = null;
     const startedAt = Date.now();
     const TOTAL_BUDGET_MS = 55_000; // stay under the platform's 60s cap
-    for (const model of candidates) {
-      if (Date.now() - startedAt > TOTAL_BUDGET_MS) break; // give up gracefully
-      const controller = new AbortController();
-      const remaining = Math.min(REQUEST_TIMEOUT_MS, TOTAL_BUDGET_MS - (Date.now() - startedAt));
-      if (remaining < 5_000) break;
-      const timer = setTimeout(() => controller.abort(), remaining);
-      try {
-        const content = await callNim({ baseUrl, apiKey, model, systemPrompt, messages: nimMessages, signal: controller.signal });
-        const cleaned = cleanAnswer(content);
-        if (!cleaned) {
-          lastError = `NVIDIA API (${model}) returned no content.`;
-          continue;
-        }
-        const toolCall = parseToolCall(cleaned);
-        if (toolCall) {
+    outer: for (const provider of chain) {
+      for (const model of provider.models) {
+        const elapsed = Date.now() - startedAt;
+        if (elapsed > TOTAL_BUDGET_MS) break outer;
+        const remaining = Math.min(REQUEST_TIMEOUT_MS, TOTAL_BUDGET_MS - elapsed);
+        if (remaining < 5_000) break outer;
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), remaining);
+        try {
+          const content = await callChat({
+            baseUrl: provider.baseUrl,
+            apiKey: provider.apiKey,
+            model,
+            systemPrompt,
+            messages: nimMessages,
+            signal: controller.signal,
+          });
+          const cleaned = cleanAnswer(content);
+          if (!cleaned) {
+            lastError = `${provider.name} (${model}) returned no content.`;
+            continue;
+          }
+          const toolCall = parseToolCall(cleaned);
+          if (toolCall) {
+            res.writeHead(200, { ...cors, "Content-Type": "application/json" });
+            return res.end(JSON.stringify({ ok: true, type: "tool_request", ...toolCall, model: `${provider.name}:${model}` }));
+          }
           res.writeHead(200, { ...cors, "Content-Type": "application/json" });
-          return res.end(JSON.stringify({ ok: true, type: "tool_request", ...toolCall, model }));
+          return res.end(JSON.stringify({ ok: true, type: "answer", answer: cleaned, model: `${provider.name}:${model}`, toolsUsed: toolResults.length }));
+        } catch (e) {
+          if (e.name === "AbortError") {
+            lastError = `AI timed out after ${REQUEST_TIMEOUT_MS / 1000}s (${provider.name}:${model})`;
+            continue; // try the next candidate
+          }
+          lastError = e.message;
+          // Retired / unhosted / rate-limited / unavailable → next candidate.
+          if ([410, 404, 403, 429, 503].includes(e.status)) continue;
+          break outer;
+        } finally {
+          clearTimeout(timer);
         }
-        res.writeHead(200, { ...cors, "Content-Type": "application/json" });
-        return res.end(JSON.stringify({ ok: true, type: "answer", answer: cleaned, model, toolsUsed: toolResults.length }));
-      } catch (e) {
-        if (e.name === "AbortError") {
-          lastError = `NVIDIA API timed out after ${REQUEST_TIMEOUT_MS / 1000}s (${model})`;
-          continue; // try the next candidate model
-        }
-        lastError = e.message;
-        // Retired / unhosted / not-accepted-for-key → try the next candidate.
-        if ([410, 404, 403, 429, 503].includes(e.status)) continue;
-        throw e;
-      } finally {
-        clearTimeout(timer);
       }
     }
     throw new Error(
-      (lastError || "NVIDIA API returned no answer for any available model.") +
+      (lastError || "No AI provider returned an answer.") +
         " — the AI service seems slow right now, please try again shortly."
     );
   } catch (e) {
