@@ -220,11 +220,7 @@ export default function HistoricReportPage() {
     return [...set].sort();
   }, [rows, zoneByBranch, skippedBranches]);
 
-  const zoneOptions = useMemo(() => {
-    const set = new Set<string>();
-    for (const m of mapping) if (m.zone) set.add(m.zone);
-    return [...set].sort();
-  }, [mapping]);
+  // (zone options are cross-cascaded below, alongside branch/grade options)
 
   const enriched = useMemo(
     () =>
@@ -240,9 +236,17 @@ export default function HistoricReportPage() {
   // Grades present in the current year's rows (sorted naturally).
   const gradeOptions = useMemo(() => {
     const set = new Set<string>();
-    for (const r of rows) if (r.grade) set.add(r.grade);
+    for (const r of enriched) {
+      if (!r.grade) continue;
+      // Cascade: with zone/branch/segment filters active, only grades found in
+      // the matching rows are listed (student type and search don't cascade).
+      if (zoneFilter && r.zone !== zoneFilter) continue;
+      if (branch && r.branch !== branch) continue;
+      if (segment && r.segment !== segment) continue;
+      set.add(r.grade);
+    }
     return [...set].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
-  }, [rows]);
+  }, [enriched, zoneFilter, branch, segment]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -262,17 +266,32 @@ export default function HistoricReportPage() {
     });
   }, [enriched, search, branch, studentType, grade, segment, zoneFilter]);
 
-  // Branch options cascade from the selected zone: with Bangalore chosen, the
-  // All Branches dropdown only lists branches that belong to Bangalore.
+  // Options cross-cascade from every other active filter: with ICSE chosen,
+  // All Branches lists only branches that have ICSE rows; with Bangalore chosen,
+  // only branches in Bangalore; with a grade chosen, only branches having it.
   const branchOptions = useMemo(() => {
     const set = new Set<string>();
-    rows.forEach((r) => {
+    enriched.forEach((r) => {
       if (!r.branch) return;
-      if (zoneFilter && zoneByBranch.get(r.branch) !== zoneFilter) return;
+      if (zoneFilter && r.zone !== zoneFilter) return;
+      if (segment && r.segment !== segment) return;
+      if (grade && r.grade !== grade) return;
       set.add(r.branch);
     });
     return [...set].sort((a, b) => a.localeCompare(b));
-  }, [rows, zoneByBranch, zoneFilter]);
+  }, [enriched, zoneFilter, segment, grade]);
+
+  const zoneOptionsFiltered = useMemo(() => {
+    const set = new Set<string>();
+    for (const r of enriched) {
+      if (!r.zone || r.zone === "(Unmapped)") continue;
+      if (branch && r.branch !== branch) continue;
+      if (segment && r.segment !== segment) continue;
+      if (grade && r.grade !== grade) continue;
+      set.add(r.zone);
+    }
+    return [...set].sort((a, b) => a.localeCompare(b));
+  }, [enriched, branch, segment, grade]);
 
   const changeZoneFilter = (z: string) => {
     setZoneFilter(z);
@@ -541,7 +560,7 @@ export default function HistoricReportPage() {
                 aria-label="Filter by zone"
               >
                 <option value="">All Zones</option>
-                {zoneOptions.map((z) => (
+                {zoneOptionsFiltered.map((z) => (
                   <option key={z} value={z}>
                     {z}
                   </option>
