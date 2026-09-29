@@ -98,12 +98,18 @@ export function useIcseConfig() {
     if (mounted.current) setStatus("saved");
   }, []);
 
+  const saveTimer = useRef<number | null>(null);
   const setRows = useCallback(
     (next: IcseRule[]) => {
       latest.current = next;
       setRowsState(next);
       writeCache(next);
-      void persist(next);
+      // Debounce the DB write — inline editing fires a change per keystroke.
+      if (saveTimer.current != null) window.clearTimeout(saveTimer.current);
+      saveTimer.current = window.setTimeout(() => {
+        saveTimer.current = null;
+        void persist(latest.current);
+      }, 600);
     },
     [persist]
   );

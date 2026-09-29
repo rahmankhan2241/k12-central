@@ -85,7 +85,7 @@ export default function IcseConfigCard() {
               </thead>
               <tbody>
                 {rows.map((r, i) => (
-                  <tr key={`${r.branch}|${r.grade}|${i}`}>
+                  <tr key={i}>
                     <td className="mapping-idx">{i + 1}</td>
                     <td>
                       <input
