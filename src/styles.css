@@ -2151,6 +2151,123 @@ button.sync-pill.failed:hover {
 
 /* Payment Report extras */
 
+/* ── Multi-select filter dropdown ──────────────────────────── */
+
+.msel {
+  position: relative;
+}
+
+.msel-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 150px;
+  max-width: 240px;
+  padding: 7px 10px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-size: 13px;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.msel-btn:hover {
+  border-color: var(--navy-600);
+}
+
+.msel-btn.active {
+  border-color: var(--navy-600);
+  background: var(--blue-50);
+  font-weight: 600;
+}
+
+.msel-text {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+}
+
+.msel-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 70;
+  width: 250px;
+  padding: 6px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-shadow: var(--shadow-lg);
+  animation: year-dd-in 0.14s ease-out;
+}
+
+.msel-search input {
+  width: 100%;
+  padding: 6px 9px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  font-size: 12.5px;
+  margin-bottom: 4px;
+}
+
+.msel-actions {
+  display: flex;
+  gap: 12px;
+  padding: 2px 8px 6px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.msel-actions .link-btn {
+  font-size: 12px;
+}
+
+.msel-actions .link-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.msel-list {
+  max-height: 260px;
+  overflow-y: auto;
+  margin-top: 4px;
+}
+
+.msel-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 6px 8px;
+  border-radius: 7px;
+  font-size: 13px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.msel-item:hover {
+  background: var(--blue-50);
+}
+
+.msel-item input {
+  accent-color: var(--navy-700);
+  flex-shrink: 0;
+}
+
+.msel-item span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.msel-empty {
+  padding: 12px;
+  text-align: center;
+  font-size: 12.5px;
+  color: var(--ink-faint);
+}
+
 .segment-chip {
   display: inline-block;
   padding: 2px 9px;

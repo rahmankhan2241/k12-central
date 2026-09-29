@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useBranchZbhMapping } from "../useBranchZbhMapping";
 import { useIcseConfig } from "../useIcseConfig";
 import { useHistoricGlobal } from "../useHistoricFetch";
+import MultiSelect from "../components/MultiSelect";
 import { findZoneByBranchEduvate } from "../types";
 import type { BranchZbhMapping } from "../types";
 import { exportPaymentExcel } from "../exportPaymentExcel";
@@ -184,11 +185,11 @@ export default function HistoricReportPage() {
   const { isIcse } = useIcseConfig();
 
   const [search, setSearch] = useState("");
-  const [branch, setBranch] = useState("");
-  const [studentType, setStudentType] = useState("");
-  const [grade, setGrade] = useState("");
-  const [segment, setSegment] = useState("");
-  const [zoneFilter, setZoneFilter] = useState("");
+  const [branch, setBranch] = useState<string[]>([]);
+  const [studentType, setStudentType] = useState<string[]>([]);
+  const [grade, setGrade] = useState<string[]>([]);
+  const [segment, setSegment] = useState<string[]>([]);
+  const [zoneFilter, setZoneFilter] = useState<string[]>([]);
   const [skippedBranches, setSkippedBranches] = useState<Set<string>>(new Set());
   const [manualZone, setManualZone] = useState<Record<string, Partial<BranchZbhMapping>>>({});
   const [zoneHint, setZoneHint] = useState<Record<string, string>>({});
@@ -233,29 +234,30 @@ export default function HistoricReportPage() {
     [rows, zoneByBranch, isIcse]
   );
 
-  // Grades present in the current year's rows (sorted naturally).
+  const includesAny = (sel: string[], v: string) => sel.length === 0 || sel.includes(v);
+
+  // Grades sorted naturally, cascaded by zone/branch/segment selections.
   const gradeOptions = useMemo(() => {
     const set = new Set<string>();
     for (const r of enriched) {
       if (!r.grade) continue;
-      // Cascade: with zone/branch/segment filters active, only grades found in
-      // the matching rows are listed (student type and search don't cascade).
-      if (zoneFilter && r.zone !== zoneFilter) continue;
-      if (branch && r.branch !== branch) continue;
-      if (segment && r.segment !== segment) continue;
+      if (!includesAny(zoneFilter, r.zone)) continue;
+      if (!includesAny(branch, r.branch)) continue;
+      if (!includesAny(segment, r.segment)) continue;
       set.add(r.grade);
     }
     return [...set].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
-  }, [enriched, zoneFilter, branch, segment]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enriched, zoneFilter.join("|"), branch.join("|"), segment.join("|")]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     return enriched.filter((r) => {
-      if (branch && r.branch !== branch) return false;
-      if (studentType && r.student_type !== studentType) return false;
-      if (grade && r.grade !== grade) return false;
-      if (zoneFilter && r.zone !== zoneFilter) return false;
-      if (segment && r.segment !== segment) return false;
+      if (!includesAny(branch, r.branch)) return false;
+      if (!includesAny(studentType, r.student_type)) return false;
+      if (!includesAny(grade, r.grade)) return false;
+      if (!includesAny(zoneFilter, r.zone)) return false;
+      if (!includesAny(segment, r.segment)) return false;
       if (!q) return true;
       return (
         r.branch.toLowerCase().includes(q) ||
@@ -264,40 +266,37 @@ export default function HistoricReportPage() {
         r.zone.toLowerCase().includes(q)
       );
     });
-  }, [enriched, search, branch, studentType, grade, segment, zoneFilter]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enriched, search, branch.join("|"), studentType.join("|"), grade.join("|"), segment.join("|"), zoneFilter.join("|")]);
 
   // Options cross-cascade from every other active filter: with ICSE chosen,
   // All Branches lists only branches that have ICSE rows; with Bangalore chosen,
-  // only branches in Bangalore; with a grade chosen, only branches having it.
+  // only branches in Bangalore; with selected grades, only branches having them.
   const branchOptions = useMemo(() => {
     const set = new Set<string>();
     enriched.forEach((r) => {
       if (!r.branch) return;
-      if (zoneFilter && r.zone !== zoneFilter) return;
-      if (segment && r.segment !== segment) return;
-      if (grade && r.grade !== grade) return;
+      if (!includesAny(zoneFilter, r.zone)) return;
+      if (!includesAny(segment, r.segment)) return;
+      if (!includesAny(grade, r.grade)) return;
       set.add(r.branch);
     });
     return [...set].sort((a, b) => a.localeCompare(b));
-  }, [enriched, zoneFilter, segment, grade]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enriched, zoneFilter.join("|"), segment.join("|"), grade.join("|")]);
 
   const zoneOptionsFiltered = useMemo(() => {
     const set = new Set<string>();
     for (const r of enriched) {
       if (!r.zone || r.zone === "(Unmapped)") continue;
-      if (branch && r.branch !== branch) continue;
-      if (segment && r.segment !== segment) continue;
-      if (grade && r.grade !== grade) continue;
+      if (!includesAny(branch, r.branch)) continue;
+      if (!includesAny(segment, r.segment)) continue;
+      if (!includesAny(grade, r.grade)) continue;
       set.add(r.zone);
     }
     return [...set].sort((a, b) => a.localeCompare(b));
-  }, [enriched, branch, segment, grade]);
-
-  const changeZoneFilter = (z: string) => {
-    setZoneFilter(z);
-    // Reset the branch filter if it no longer belongs to the new zone.
-    setBranch((cur) => (!cur || !z || (zoneByBranch.get(cur) ?? "") === z ? cur : ""));
-  };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enriched, branch.join("|"), segment.join("|"), grade.join("|")]);
 
   const handleFetchNow = async () => {
     try {
@@ -307,14 +306,21 @@ export default function HistoricReportPage() {
     }
   };
 
-  const hasActiveFilters = Boolean(search.trim() || branch || studentType || grade || segment || zoneFilter);
+  const hasActiveFilters =
+    search.trim().length > 0 ||
+    branch.length > 0 ||
+    studentType.length > 0 ||
+    grade.length > 0 ||
+    segment.length > 0 ||
+    zoneFilter.length > 0;
 
+  const joinList = (sel: string[]) => (sel.length <= 3 ? sel.join(", ") : `${sel.length} selected`);
   const activeFilterSummary = [
-    zoneFilter && `Zone: ${zoneFilter}`,
-    branch && `Branch: ${branch}`,
-    studentType && `Type: ${studentType}`,
-    grade && `Grade: ${grade}`,
-    segment && `Segment: ${segment}`,
+    zoneFilter.length > 0 && `Zone: ${joinList(zoneFilter)}`,
+    branch.length > 0 && `Branch: ${joinList(branch)}`,
+    studentType.length > 0 && `Type: ${joinList(studentType)}`,
+    grade.length > 0 && `Grade: ${joinList(grade)}`,
+    segment.length > 0 && `Segment: ${joinList(segment)}`,
     search.trim() && `Search: “${search.trim()}”`,
   ]
     .filter(Boolean)
@@ -540,65 +546,41 @@ export default function HistoricReportPage() {
                   onChange={(e) => setSearch(e.target.value)}
                 />
               </div>
-              <select
-                className="filter-select"
-                value={branch}
-                onChange={(e) => setBranch(e.target.value)}
-                aria-label="Filter by branch"
-              >
-                <option value="">All Branches</option>
-                {branchOptions.map((b) => (
-                  <option key={b} value={b}>
-                    {b}
-                  </option>
-                ))}
-              </select>
-              <select
-                className="filter-select"
-                value={zoneFilter}
-                onChange={(e) => changeZoneFilter(e.target.value)}
-                aria-label="Filter by zone"
-              >
-                <option value="">All Zones</option>
-                {zoneOptionsFiltered.map((z) => (
-                  <option key={z} value={z}>
-                    {z}
-                  </option>
-                ))}
-              </select>
-              <select
-                className="filter-select"
-                value={studentType}
-                onChange={(e) => setStudentType(e.target.value)}
-                aria-label="Filter by student type"
-              >
-                <option value="">New + Old</option>
-                <option value="New">New</option>
-                <option value="Old">Old</option>
-              </select>
-              <select
-                className="filter-select"
-                value={grade}
-                onChange={(e) => setGrade(e.target.value)}
-                aria-label="Filter by grade"
-              >
-                <option value="">All Grades</option>
-                {gradeOptions.map((g) => (
-                  <option key={g} value={g}>
-                    {g}
-                  </option>
-                ))}
-              </select>
-              <select
-                className="filter-select"
-                value={segment}
-                onChange={(e) => setSegment(e.target.value)}
-                aria-label="Filter by segment"
-              >
-                <option value="">ICSE + OIS</option>
-                <option value="ICSE">ICSE</option>
-                <option value="OIS">OIS</option>
-              </select>
+              <MultiSelect
+                label="All Branches"
+                options={branchOptions}
+                selected={branch}
+                onChange={setBranch}
+                ariaLabel="Filter by branch"
+              />
+              <MultiSelect
+                label="All Zones"
+                options={zoneOptionsFiltered}
+                selected={zoneFilter}
+                onChange={setZoneFilter}
+                ariaLabel="Filter by zone"
+              />
+              <MultiSelect
+                label="New + Old"
+                options={["New", "Old"]}
+                selected={studentType}
+                onChange={setStudentType}
+                ariaLabel="Filter by student type"
+              />
+              <MultiSelect
+                label="All Grades"
+                options={gradeOptions}
+                selected={grade}
+                onChange={setGrade}
+                ariaLabel="Filter by grade"
+              />
+              <MultiSelect
+                label="ICSE + OIS"
+                options={["ICSE", "OIS"]}
+                selected={segment}
+                onChange={setSegment}
+                ariaLabel="Filter by segment"
+              />
             </div>
             <div className="historic-toolbar-right">
               <span className="row-count">
