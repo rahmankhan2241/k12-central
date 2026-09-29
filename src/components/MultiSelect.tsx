@@ -40,14 +40,8 @@ export default function MultiSelect({
     };
   }, [open]);
 
-  // Drop selections that the (cascaded) option list no longer contains.
-  useEffect(() => {
-    if (selected.length === 0) return;
-    const alive = new Set(options);
-    const kept = selected.filter((s) => alive.has(s));
-    if (kept.length !== selected.length) onChange(kept);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [options.join("\n")]);
+  // Excel-style: keep selections even if another filter makes them produce no
+  // rows — unchecking must stay possible, so options never prune the selection.
 
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase();
