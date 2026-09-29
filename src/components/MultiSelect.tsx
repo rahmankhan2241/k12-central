@@ -58,8 +58,10 @@ export default function MultiSelect({
     onChange(selected.includes(opt) ? selected.filter((s) => s !== opt) : [...selected, opt]);
   };
 
-  const summary =
-    selected.length === 0
+  const allSelected = options.length > 0 && selected.length === options.length;
+  const summary = allSelected
+    ? `${label.replace(/^All /, "All ")} (all)`
+    : selected.length === 0
       ? label
       : selected.length === 1
         ? selected[0]
@@ -94,20 +96,33 @@ export default function MultiSelect({
             <button
               type="button"
               className="link-btn"
-              onClick={() => onChange([])}
-              disabled={selected.length === 0}
+              onClick={() => onChange([...options])}
+              disabled={options.length === 0 || selected.length === options.length}
+              title="Check every option"
             >
               Select all
             </button>
             <button
               type="button"
               className="link-btn"
+              onClick={() => onChange([])}
+              disabled={selected.length === 0}
+              title="Uncheck everything (no filter)"
+            >
+              Clear
+            </button>
+            <button
+              type="button"
+              className="link-btn"
               onClick={() => {
                 const alive = new Set(visible);
-                onChange(options.filter((o) => !alive.has(o)));
+                const next = options.filter(
+                  (o) => alive.has(o) !== selected.includes(o)
+                );
+                onChange(next);
               }}
               disabled={visible.length === 0}
-              title="Uncheck everything currently visible"
+              title="Check only what is currently unchecked"
             >
               Invert
             </button>
