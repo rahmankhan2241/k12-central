@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import ReportParamsModal from "../components/ReportParamsModal";
 import PreparedReportView from "../components/PreparedReportView";
 import { prepareReport, type PreparedReport } from "../prepareReport";
@@ -11,6 +11,7 @@ import {
   findMissingColumns,
 } from "../reportConfig";
 import type { BranchZbhMapping, ParsedReport, ReportRow } from "../types";
+import { registerGrnSource, unregisterGrnSource } from "../askAiSource";
 import {
   AlertIcon,
   CheckCircleIcon,
@@ -54,6 +55,18 @@ export default function PendingGrnPage() {
   const PAGE_SIZE = 100;
 
   const validationOk = banner?.kind === "success";
+
+  // Expose the uploaded file to the Ask AI agent (it analyses it in memory).
+  useEffect(() => {
+    if (!report) return;
+    registerGrnSource({
+      fileName: report.fileName,
+      columns: report.columns,
+      rowCount: report.rows.length,
+      getRows: () => report.rows.map((r) => r.cells),
+    });
+    return () => unregisterGrnSource();
+  }, [report]);
 
   const visibleRows = useMemo(() => {
     if (!report) return [];
