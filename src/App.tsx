@@ -7,6 +7,7 @@ import HistoricReportPage from "./pages/HistoricReportPage";
 import SettingsPage from "./pages/SettingsPage";
 import PlaceholderPage from "./pages/PlaceholderPage";
 import { HistoricProvider, useHistoricGlobal } from "./useHistoricFetch";
+import AskAiWidget from "./components/AskAiWidget";
 import { K12Logo, MenuIcon } from "./icons";
 
 const PAGE_TITLES: Record<string, string> = {
@@ -102,6 +103,8 @@ function Shell() {
       </div>
       {/* Loader only on the Historic Report page — background loading stays invisible elsewhere. */}
       {activePage === "historic-report" && <GlobalLoader />}
+      {/* Page-aware AI assistant, available on every page. */}
+      <AskAiWidget page={activePage} />
     </div>
   );
 }
