@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useBranchZbhMapping } from "../useBranchZbhMapping";
+import { useIcseConfig } from "../useIcseConfig";
 import { useHistoricGlobal } from "../useHistoricFetch";
 import { findZoneByBranchEduvate } from "../types";
 import type { BranchZbhMapping } from "../types";
@@ -180,11 +181,13 @@ export default function HistoricReportPage() {
     needsMigration,
   } = useHistoricGlobal();
   const { rows: mapping, setRows: setMappingRows, status: mappingStatus } = useBranchZbhMapping();
+  const { isIcse } = useIcseConfig();
 
   const [search, setSearch] = useState("");
   const [branch, setBranch] = useState("");
   const [studentType, setStudentType] = useState("");
   const [grade, setGrade] = useState("");
+  const [segment, setSegment] = useState("");
   const [zoneFilter, setZoneFilter] = useState("");
   const [skippedBranches, setSkippedBranches] = useState<Set<string>>(new Set());
   const [manualZone, setManualZone] = useState<Record<string, Partial<BranchZbhMapping>>>({});
@@ -228,8 +231,10 @@ export default function HistoricReportPage() {
       rows.map((r) => ({
         ...r,
         zone: zoneByBranch.get(r.branch) || "(Unmapped)",
+        // ICSE when Branch Name + Grade match a rule in Settings → ICSE Configuration, else OIS.
+        segment: isIcse(r.branch, r.grade) ? "ICSE" : "OIS",
       })),
-    [rows, zoneByBranch]
+    [rows, zoneByBranch, isIcse]
   );
 
   // Grades present in the current year's rows (sorted naturally).
@@ -246,6 +251,7 @@ export default function HistoricReportPage() {
       if (studentType && r.student_type !== studentType) return false;
       if (grade && r.grade !== grade) return false;
       if (zoneFilter && r.zone !== zoneFilter) return false;
+      if (segment && r.segment !== segment) return false;
       if (!q) return true;
       return (
         r.branch.toLowerCase().includes(q) ||
@@ -254,7 +260,7 @@ export default function HistoricReportPage() {
         r.zone.toLowerCase().includes(q)
       );
     });
-  }, [enriched, search, branch, studentType, grade, zoneFilter]);
+  }, [enriched, search, branch, studentType, grade, segment, zoneFilter]);
 
   // Branch options cascade from the selected zone: with Bangalore chosen, the
   // All Branches dropdown only lists branches that belong to Bangalore.
@@ -282,13 +288,14 @@ export default function HistoricReportPage() {
     }
   };
 
-  const hasActiveFilters = Boolean(search.trim() || branch || studentType || grade || zoneFilter);
+  const hasActiveFilters = Boolean(search.trim() || branch || studentType || grade || segment || zoneFilter);
 
   const activeFilterSummary = [
     zoneFilter && `Zone: ${zoneFilter}`,
     branch && `Branch: ${branch}`,
     studentType && `Type: ${studentType}`,
     grade && `Grade: ${grade}`,
+    segment && `Segment: ${segment}`,
     search.trim() && `Search: “${search.trim()}”`,
   ]
     .filter(Boolean)
@@ -305,6 +312,7 @@ export default function HistoricReportPage() {
         enrollment_code: r.enrollment_code,
         grade: r.grade,
         student_type: r.student_type,
+        segment: r.segment,
         first_paid_date: r.first_paid_date,
       }));
       await exportPaymentExcel(data, mode);
@@ -562,6 +570,16 @@ export default function HistoricReportPage() {
                   </option>
                 ))}
               </select>
+              <select
+                className="filter-select"
+                value={segment}
+                onChange={(e) => setSegment(e.target.value)}
+                aria-label="Filter by segment"
+              >
+                <option value="">ICSE + OIS</option>
+                <option value="ICSE">ICSE</option>
+                <option value="OIS">OIS</option>
+              </select>
             </div>
             <div className="historic-toolbar-right">
               <span className="row-count">
@@ -681,6 +699,7 @@ export default function HistoricReportPage() {
                   <th>Enrollment Code</th>
                   <th>Grade</th>
                   <th>Student Type</th>
+                  <th>Segment</th>
                   <th>First Paid Date</th>
                 </tr>
               </thead>
@@ -698,12 +717,17 @@ export default function HistoricReportPage() {
                           {r.student_type}
                         </span>
                       </td>
+                      <td>
+                        <span className={`segment-chip ${r.segment === "ICSE" ? "icse" : "ois"}`}>
+                          {r.segment}
+                        </span>
+                      </td>
                       <td>{r.first_paid_date}</td>
                     </tr>
                   ))}
                 {!busy && filtered.length === 0 && (
                   <tr>
-                    <td colSpan={7} className="table-empty">
+                    <td colSpan={8} className="table-empty">
                       No students found{search || branch || studentType || zoneFilter ? " match your filters" : " — fetch the report to load data"}.
                     </td>
                   </tr>

@@ -1,7 +1,7 @@
 import { useState } from "react";
 import ColumnMappingCard from "../components/ColumnMappingCard";
 import BranchZbhCard from "../components/BranchZbhCard";
-import HistoricColumnsCard from "../components/HistoricColumnsCard";
+import IcseConfigCard from "../components/IcseConfigCard";
 import { useReportConfig } from "../useReportConfig";
 import { ClockIcon, GearIcon } from "../icons";
 
@@ -65,7 +65,7 @@ export default function SettingsPage() {
               <BranchZbhCard />
             </>
           )}
-          {section === "historic" && <HistoricColumnsCard />}
+          {section === "historic" && <IcseConfigCard />}
           {section === "future" && (
             <div className="card">
               <div className="placeholder">

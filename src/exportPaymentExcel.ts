@@ -21,9 +21,9 @@ const zebraFill: CellStyle = {
   fill: { patternType: "solid", fgColor: { rgb: "F8FAFD" } },
 };
 
-const COLUMNS = ["Zone", "Branch", "Enrollment Code", "Grade", "Student Type", "First Paid Date"];
+const COLUMNS = ["Zone", "Branch", "Enrollment Code", "Grade", "Student Type", "Segment", "First Paid Date"];
 
-const COL_WIDTHS = [{ wch: 18 }, { wch: 32 }, { wch: 18 }, { wch: 14 }, { wch: 13 }, { wch: 16 }];
+const COL_WIDTHS = [{ wch: 18 }, { wch: 32 }, { wch: 18 }, { wch: 14 }, { wch: 13 }, { wch: 10 }, { wch: 16 }];
 
 export type PaymentExportRow = {
   zone: string;
@@ -31,6 +31,7 @@ export type PaymentExportRow = {
   enrollment_code: string;
   grade: string;
   student_type: string;
+  segment: string;
   first_paid_date: string;
 };
 
@@ -56,6 +57,7 @@ export async function exportPaymentExcel(
     r.enrollment_code,
     r.grade,
     r.student_type,
+    r.segment,
     r.first_paid_date,
   ]);
 

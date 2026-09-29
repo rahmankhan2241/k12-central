@@ -2150,6 +2150,24 @@ button.sync-pill.failed:hover {
 }
 
 /* Payment Report extras */
+
+.segment-chip {
+  display: inline-block;
+  padding: 2px 9px;
+  border-radius: 99px;
+  font-size: 11.5px;
+  font-weight: 700;
+}
+
+.segment-chip.icse {
+  background: var(--green-100);
+  color: var(--green-700);
+}
+
+.segment-chip.ois {
+  background: var(--blue-100);
+  color: var(--navy-700);
+}
 .unmapped-card {
   border-left: 3px solid #d97706;
 }
