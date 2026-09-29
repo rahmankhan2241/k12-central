@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { supabase, isSupabaseConfigured } from "./supabaseClient";
+import { readPaymentCache, writePaymentCache, deletePaymentCache } from "./paymentCache";
 import type { HistoricFetchLog } from "./types";
 
 /**
@@ -46,6 +47,9 @@ const DEFAULT_YEAR = "2026-27";
  * double the requests and can overwrite each other's results.
  */
 const inflightLoads = new Map<string, Promise<void>>();
+
+/** In-memory copy of the IndexedDB cache — avoids re-reading a ~30MB blob per year switch. */
+const memoryCache = new Map<string, { rows: import("./types").PaymentReportRow[]; cachedAt: number }>();
 
 export function HistoricProvider({ children }: { children: ReactNode }) {
   const [logs, setLogs] = useState<Record<string, HistoricFetchLog>>({});
@@ -181,6 +185,8 @@ export function HistoricProvider({ children }: { children: ReactNode }) {
       setRowsByYear((m) => ({ ...m, [year]: all }));
       setLoadError(null);
       setNeedsMigration(false); // a successful load proves the schema is current
+      memoryCache.set(year, { rows: all, cachedAt: Date.now() });
+      void writePaymentCache(year, all); // persist for instant cold-start/year-switch loads
     } catch (e) {
       if (!mounted.current) return;
       setLoadError(errText(e));
@@ -197,6 +203,30 @@ export function HistoricProvider({ children }: { children: ReactNode }) {
    * of the earlier load.
    */
   const loadAllRows = useCallback(async (year: string, opts?: { fresh?: boolean }) => {
+    // Rows already paged into memory this session: switch instantly, skip network.
+    if (!opts?.fresh && rowsByYearRef.current[year]) return;
+    // Otherwise try the persistent cache (stale-while-revalidate): show cached
+    // rows immediately, then only hit the network if the cache predates the
+    // year's last successful fetch (fetchNow writes new rows).
+    if (!opts?.fresh) {
+      let cached = memoryCache.get(year);
+      if (!cached) {
+        const entry = await readPaymentCache(year);
+        if (entry) {
+          cached = { rows: entry.rows, cachedAt: entry.cachedAt };
+          memoryCache.set(year, cached);
+        }
+      }
+      if (cached) {
+        setRowsByYear((m) => ({ ...m, [year]: cached.rows }));
+        setLoadError(null);
+        setNeedsMigration(false);
+        const logRow = logsRef.current[`payment_report:${year}`];
+        const lastFetch = logRow?.last_fetched_at ? new Date(logRow.last_fetched_at).getTime() : 0;
+        if (cached.cachedAt >= lastFetch) return; // cache is current — no network needed
+        // Stale: fall through to refresh, but keep the cached rows visible meanwhile.
+      }
+    }
     const inflight = inflightLoads.get(year);
     if (inflight) {
       await inflight.catch(() => {});
@@ -208,6 +238,12 @@ export function HistoricProvider({ children }: { children: ReactNode }) {
     inflightLoads.set(year, p);
     await p.catch(() => {});
   }, [runLoad]);
+
+  // Refs mirroring recent state for use inside async callbacks without re-creating them.
+  const rowsByYearRef = useRef(rowsByYear);
+  rowsByYearRef.current = rowsByYear;
+  const logsRef = useRef(logs);
+  logsRef.current = logs;
 
   // Load the current year's data once on app start (background — user can navigate freely)
   useEffect(() => {
@@ -250,6 +286,8 @@ export function HistoricProvider({ children }: { children: ReactNode }) {
           setFetchProgress(`${y} data written to Supabase — refreshing the report…`);
         }
         await reloadLogsRef.current();
+        memoryCache.delete(y); // the pipeline wrote new rows — drop any stale cached snapshot
+        await deletePaymentCache(y);
         await loadAllRows(y, { fresh: true }); // UI shows fresh rows before the button finishes
         return body;
       } catch (e) {
