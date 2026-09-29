@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useBranchZbhMapping } from "../useBranchZbhMapping";
 import { useHistoricGlobal } from "../useHistoricFetch";
 import { findZoneByBranchEduvate } from "../types";
@@ -39,6 +39,118 @@ function fmtDateTime(iso: string | null | undefined): string {
   });
 }
 
+function YearIcon({ size = 15 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <rect x="3" y="4" width="18" height="18" rx="2" />
+      <path d="M16 2v4M8 2v4M3 10h18" />
+    </svg>
+  );
+}
+
+function ChevronIcon({ size = 14, open = false }: { size?: number; open?: boolean }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2.4}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+      style={{ transform: open ? "rotate(180deg)" : undefined, transition: "transform .15s" }}
+    >
+      <path d="m6 9 6 6 6-6" />
+    </svg>
+  );
+}
+
+/**
+ * Styled academic-year picker (native <select> can't be customized).
+ * Renders a button + popover with one card per year; 2027-28 is shown
+ * but disabled until the session starts at Eduvate.
+ */
+function YearDropdown({
+  years,
+  value,
+  onChange,
+}: {
+  years: string[];
+  value: string;
+  onChange: (y: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("mousedown", onDoc);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDoc);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  return (
+    <div className="year-dd" ref={ref}>
+      <button
+        type="button"
+        className="year-dd-btn"
+        onClick={() => setOpen((o) => !o)}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        title="Switch academic year — each year's data is fetched and stored separately"
+      >
+        <span className="year-dd-icon">
+          <YearIcon />
+        </span>
+        <span className="year-dd-label">
+          <span className="year-dd-cap">Academic Year</span>
+          <span className="year-dd-value">{value}</span>
+        </span>
+        <ChevronIcon open={open} />
+      </button>
+      {open && (
+        <div className="year-dd-menu" role="listbox">
+          {years.map((y) => {
+            const disabled = y === "2027-28";
+            return (
+              <button
+                key={y}
+                type="button"
+                role="option"
+                aria-selected={y === value}
+                className={`year-dd-item ${y === value ? "active" : ""} ${disabled ? "disabled" : ""}`}
+                disabled={disabled}
+                onClick={() => {
+                  setOpen(false);
+                  onChange(y);
+                }}
+              >
+                <span className="year-dd-year">{y}</span>
+                {disabled ? (
+                  <span className="year-dd-tag">not started</span>
+                ) : y === value ? (
+                  <span className="year-dd-check">✓</span>
+                ) : null}
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function timeAgo(iso: string | null | undefined): string {
   if (!iso) return "never";
   const ms = Date.now() - new Date(iso).getTime();
@@ -72,6 +184,7 @@ export default function HistoricReportPage() {
   const [search, setSearch] = useState("");
   const [branch, setBranch] = useState("");
   const [studentType, setStudentType] = useState("");
+  const [grade, setGrade] = useState("");
   const [zoneFilter, setZoneFilter] = useState("");
   const [skippedBranches, setSkippedBranches] = useState<Set<string>>(new Set());
   const [manualZone, setManualZone] = useState<Record<string, Partial<BranchZbhMapping>>>({});
@@ -119,11 +232,19 @@ export default function HistoricReportPage() {
     [rows, zoneByBranch]
   );
 
+  // Grades present in the current year's rows (sorted naturally).
+  const gradeOptions = useMemo(() => {
+    const set = new Set<string>();
+    for (const r of rows) if (r.grade) set.add(r.grade);
+    return [...set].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+  }, [rows]);
+
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     return enriched.filter((r) => {
       if (branch && r.branch !== branch) return false;
       if (studentType && r.student_type !== studentType) return false;
+      if (grade && r.grade !== grade) return false;
       if (zoneFilter && r.zone !== zoneFilter) return false;
       if (!q) return true;
       return (
@@ -133,7 +254,7 @@ export default function HistoricReportPage() {
         r.zone.toLowerCase().includes(q)
       );
     });
-  }, [enriched, search, branch, studentType, zoneFilter]);
+  }, [enriched, search, branch, studentType, grade, zoneFilter]);
 
   // Branch options cascade from the selected zone: with Bangalore chosen, the
   // All Branches dropdown only lists branches that belong to Bangalore.
@@ -161,12 +282,13 @@ export default function HistoricReportPage() {
     }
   };
 
-  const hasActiveFilters = Boolean(search.trim() || branch || studentType || zoneFilter);
+  const hasActiveFilters = Boolean(search.trim() || branch || studentType || grade || zoneFilter);
 
   const activeFilterSummary = [
     zoneFilter && `Zone: ${zoneFilter}`,
     branch && `Branch: ${branch}`,
     studentType && `Type: ${studentType}`,
+    grade && `Grade: ${grade}`,
     search.trim() && `Search: “${search.trim()}”`,
   ]
     .filter(Boolean)
@@ -280,19 +402,7 @@ export default function HistoricReportPage() {
           </div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <select
-            className="filter-select"
-            value={selectedYear}
-            onChange={(e) => setSelectedYear(e.target.value)}
-            aria-label="Academic year"
-            title="Switch academic year — each year's data is fetched and stored separately"
-          >
-            {ACADEMIC_YEARS.map((y) => (
-              <option key={y} value={y} disabled={y === "2027-28"}>
-                {y === "2027-28" ? `${y} (not started)` : y}
-              </option>
-            ))}
-          </select>
+          <YearDropdown years={ACADEMIC_YEARS} value={selectedYear} onChange={setSelectedYear} />
           <button
             className="btn primary"
             onClick={handleFetchNow}
@@ -438,6 +548,19 @@ export default function HistoricReportPage() {
                 <option value="">New + Old</option>
                 <option value="New">New</option>
                 <option value="Old">Old</option>
+              </select>
+              <select
+                className="filter-select"
+                value={grade}
+                onChange={(e) => setGrade(e.target.value)}
+                aria-label="Filter by grade"
+              >
+                <option value="">All Grades</option>
+                {gradeOptions.map((g) => (
+                  <option key={g} value={g}>
+                    {g}
+                  </option>
+                ))}
               </select>
             </div>
             <div className="historic-toolbar-right">

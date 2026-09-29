@@ -1987,12 +1987,145 @@ button.sync-pill.failed:hover {
 }
 
 .filter-select {
-  border: 1px solid var(--border);
-  background: var(--surface);
+  border: 1px solid var(--line);
+  background: var(--card);
   border-radius: 8px;
   padding: 7px 10px;
   font-size: 13px;
-  color: var(--text);
+  color: var(--ink);
+}
+
+/* ── Academic-year dropdown (custom, styled) ─────────────────────────── */
+
+.year-dd {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.year-dd-btn {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 190px;
+  padding: 8px 12px;
+  background: linear-gradient(135deg, var(--navy-800), var(--navy-700));
+  color: #fff;
+  border: none;
+  border-radius: 10px;
+  cursor: pointer;
+  box-shadow: var(--shadow-sm);
+  transition: box-shadow 0.15s, transform 0.15s;
+}
+
+.year-dd-btn:hover {
+  box-shadow: var(--shadow-md);
+  transform: translateY(-1px);
+}
+
+.year-dd-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.14);
+  flex-shrink: 0;
+}
+
+.year-dd-label {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  line-height: 1.2;
+  flex: 1;
+  text-align: left;
+}
+
+.year-dd-cap {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: rgba(255, 255, 255, 0.65);
+}
+
+.year-dd-value {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.year-dd-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 60;
+  min-width: 220px;
+  padding: 6px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-shadow: var(--shadow-lg);
+  animation: year-dd-in 0.14s ease-out;
+}
+
+@keyframes year-dd-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.year-dd-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 9px 12px;
+  background: none;
+  border: none;
+  border-radius: 8px;
+  font-size: 13.5px;
+  font-weight: 500;
+  color: var(--ink);
+  cursor: pointer;
+  text-align: left;
+}
+
+.year-dd-item:hover:not(:disabled) {
+  background: var(--blue-50);
+  color: var(--navy-800);
+}
+
+.year-dd-item.active {
+  background: var(--blue-100);
+  color: var(--navy-800);
+  font-weight: 700;
+}
+
+.year-dd-item.disabled {
+  color: var(--ink-faint);
+  cursor: not-allowed;
+}
+
+.year-dd-check {
+  color: var(--navy-700);
+  font-weight: 800;
+}
+
+.year-dd-tag {
+  font-size: 10.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 2px 8px;
+  border-radius: 99px;
+  background: var(--amber-100);
+  color: var(--amber-600);
 }
 
 .historic-table {
