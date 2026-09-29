@@ -2,35 +2,33 @@
  * Vercel Serverless Function — "Ask AI" (agentic, page-aware).
  *
  * The model does NOT get a fixed summary. It gets a light DATA-SOURCE
- * descriptor for the page the user is on plus tool specifications, and it
- * decides what it needs:
+ * descriptor for the page the user is on plus NATIVE tool declarations
+ * (OpenAI-style `tools`), and it decides what it needs:
  *
- *   model replies {"tool":"query_payments","args":{...}}
- *     → server returns {type:"tool_request"} and the BROWSER executes the
- *       query against the live rows (payments come from Supabase into the
- *       client; the uploaded GRN file exists only in browser memory) and
- *       re-POSTs the result as toolResults.
- *   model replies with prose
- *     → server returns {type:"answer"}.
+ *   model returns tool_calls → server replies {type:"tool_request", calls:[…]}
+ *     and the BROWSER executes them against the live rows (payments come from
+ *     Supabase into the client; the uploaded GRN file exists only in browser
+ *     memory) and re-POSTs the results as toolResults.
+ *   model returns prose → server replies {type:"answer"}.
  *
- * Loop cap: the client stops after MAX_TOOL_ROUNDS tool results; the server
- * tells the model to answer with what it has once the budget is spent.
+ * The user only ever sees the final prose answer; tool activity is a client-
+ * side status line and the tool-call markers are stripped from chat history
+ * before it reaches this function.
  *
  * POST /api/ask-ai
  *   body: {
  *     page, pageTitle,
  *     source: <descriptor from src/askAiSource.ts buildPageSource()>,
  *     messages: [{role:"user"|"assistant", content}],
- *     toolResults?: [{tool, args, result}]
+ *     toolResults?: [{tool, args, result, toolCallId}]
  *   }
- *   → { ok:true, type:"tool_request", tool, args, model }
+ *   → { ok:true, type:"tool_request", calls:[{tool, args, toolCallId}], model }
  *     | { ok:true, type:"answer", answer, model, toolsUsed }
  *
- * Env (provider chain — first available is used, later ones are fallbacks):
- *   GROQ_API_KEY     — Groq (api.groq.com, OpenAI-compatible) — fastest, tried first
+ * Env (provider chain — first key present wins, later ones are fallbacks):
+ *   GROQ_API_KEY     — Groq (fastest, tried first)
  *   NVIDIA_API_KEY   — NVIDIA NIM — fallback
- *   AI_API_KEY + AI_BASE_URL (+ AI_MODEL, AI_MODELS) — any OpenAI-compatible service
- *   AI_MODEL / AI_MODELS / NVIDIA_MODEL(S) — model overrides (comma-separated lists)
+ *   AI_API_KEY + AI_BASE_URL (+ AI_MODEL/AI_MODELS) — any OpenAI-compatible service
  */
 
 // Vercel: allow up to 60s per invocation (the client loops tool rounds as
@@ -41,16 +39,13 @@ const MAX_MESSAGE_CHARS = 6_000;
 const MAX_MESSAGES = 14;
 const MAX_TOOL_RESULT_CHARS = 24_000;
 const MAX_TOOL_ROUNDS = 6;
-// Per-NIM-attempt timeout. NIM free tier intermittently queues requests for
-// minutes; on timeout we fall through to the next candidate model rather
-// than failing the whole request.
+// Per-attempt timeout; on timeout/4xx we fall through to the next candidate.
 const REQUEST_TIMEOUT_MS = 20_000;
 
-/**
- * Provider chain: each provider contributes (baseUrl, apiKey, models[]).
- * Providers with a key are tried in order; models are tried within each
- * provider; timeouts/4xx fall through to the next candidate.
- */
+// ---------------------------------------------------------------------------
+// Provider chain
+// ---------------------------------------------------------------------------
+
 const GROQ_BASE = "https://api.groq.com/openai/v1";
 const NVIDIA_BASE = "https://integrate.api.nvidia.com/v1";
 
@@ -88,13 +83,121 @@ function providerChain() {
   return chain;
 }
 
-/** Some Nemotron models emit <think>…</think> reasoning — strip it. */
+// ---------------------------------------------------------------------------
+// Tool declarations (native OpenAI-style tool calling)
+// ---------------------------------------------------------------------------
+
+const QUERY_PAYMENTS_SCHEMA = {
+  type: "function",
+  function: {
+    name: "query_payments",
+    description:
+      "Filter, count and group the payment rows (source.kind = 'payments'). One row = one student's FIRST payment, so a count = number of payment records. Copy zone/branch/grade names EXACTLY from the data source. Omit groupBy for a single total; use groupBy 'month' for month-wise counts (first_paid_date, yyyy-mm).",
+    parameters: {
+      type: "object",
+      properties: {
+        zones: { type: "array", items: { type: "string" }, description: 'Zone names, e.g. ["Bangalore"]' },
+        branches: { type: "array", items: { type: "string" }, description: "Branch names exactly as in source.zoneByBranch keys" },
+        grades: { type: "array", items: { type: "string" }, description: 'e.g. ["Grade 6"] or ["K1"]' },
+        studentTypes: { type: "array", items: { type: "string", enum: ["New", "Old"] } },
+        segments: { type: "array", items: { type: "string", enum: ["ICSE", "OIS"] } },
+        dateFrom: { type: "string", description: "inclusive yyyy-mm-dd" },
+        dateTo: { type: "string", description: "inclusive yyyy-mm-dd" },
+        groupBy: {
+          type: "string",
+          enum: ["zone", "branch", "grade", "student_type", "segment", "month"],
+          description: "omit for a single total",
+        },
+        withMonths: { type: "boolean", description: "include per-group month breakdown (default true)" },
+        limit: { type: "number", description: "max groups returned, 1-50 (default 10)" },
+      },
+    },
+  },
+};
+
+const ANALYZE_GRN_SCHEMA = {
+  type: "function",
+  function: {
+    name: "analyze_grn",
+    description:
+      "Analyze the uploaded Pending-GRN file (source.kind = 'grn_file'). Column names must match source.columns EXACTLY. With no groupBy and no aggregate, returns the first matching rows (capped) so you can read examples.",
+    parameters: {
+      type: "object",
+      properties: {
+        filters: {
+          type: "array",
+          description: "filters AND-ed together",
+          items: {
+            type: "object",
+            properties: {
+              column: { type: "string" },
+              op: { type: "string", enum: ["eq", "neq", "contains", "gt", "gte", "lt", "lte"] },
+              value: { description: "comparison value" },
+            },
+            required: ["column", "op", "value"],
+          },
+        },
+        groupBy: {
+          type: ["string", "array"],
+          items: { type: "string" },
+          description: "column name, or array of column names for multi-level grouping",
+        },
+        aggregate: {
+          type: "object",
+          properties: {
+            op: { type: "string", enum: ["count", "sum", "avg", "min", "max"] },
+            column: { type: "string", description: "numeric column for sum/avg/min/max" },
+          },
+        },
+        sortBy: {
+          type: "object",
+          properties: {
+            by: { type: "string", enum: ["count", "value", "group"] },
+            dir: { type: "string", enum: ["asc", "desc"] },
+          },
+        },
+        limit: { type: "number", description: "1-100 (default 20)" },
+      },
+    },
+  },
+};
+
+const TOOLS = [QUERY_PAYMENTS_SCHEMA, ANALYZE_GRN_SCHEMA];
+
+// ---------------------------------------------------------------------------
+// Prompt
+// ---------------------------------------------------------------------------
+
+/** Some models emit <think>…</think> reasoning — strip it. */
 function cleanAnswer(text) {
   return String(text)
     .replace(/<think>[\s\S]*?<\/think>/gi, "")
     .replace(/<think>[\s\S]*$/i, "")
     .trim();
 }
+
+function buildSystemPrompt(source, today, toolRoundsUsed) {
+  const lines = [
+    'You are "Ask AI", the assistant embedded in K12 Central System — a logistics console for K12 Techno Services (schools). The user is on the "' + (source.pageTitle || source.page) + '" page.',
+    "",
+    "DATA SOURCE (the ONLY data you may use):",
+    JSON.stringify(source),
+    "",
+    'You are an AGENT: understand what the user is really asking (rephrase vague wording internally, e.g. "Bangalore in January" → zone Bangalore, January of the report\'s year), call the tools silently to fetch exactly the data you need, then give the final answer.',
+    "",
+    "RULES:",
+    "1. Get every figure from a tool result (or the source descriptor itself). NEVER state a number you have not fetched. NEVER narrate or describe tool calls in prose — just call them; the user sees only your final answer.",
+    '2. If the source kind is "none", do NOT call tools — politely answer that this page has no data to analyse and mention which pages do (Historic Report — payment data; Pending GRN — after a file is uploaded).',
+    `3. Tool budget: at most ${MAX_TOOL_ROUNDS} tool calls in total` + (toolRoundsUsed > 0 ? ` (already used: ${toolRoundsUsed})` : "") + ". Once you have enough data (or the budget is spent), answer.",
+    '4. FINAL ANSWER — plain prose, NOT JSON, no tool talk: direct answer first (e.g. "Total payments for Bangalore in January is 2,841."), numbers with Indian digit grouping (1,23,456), then at most 4 short supporting bullets. Mention the filters you applied when relevant.',
+    "5. If the data cannot answer the question (e.g. a field the source doesn't have), say so briefly and suggest what would help.",
+    "",
+    "Today is " + today + ".",
+  ];
+  return lines.join("\n");
+}
+
+// ---------------------------------------------------------------------------
 
 function readBody(req) {
   if (req.body) return Promise.resolve(req.body);
@@ -112,54 +215,7 @@ function readBody(req) {
   });
 }
 
-// ---------------------------------------------------------------------------
-// Prompt building
-// ---------------------------------------------------------------------------
-
-const QUERY_PAYMENTS_SPEC = `{"tool":"query_payments","args":{...}} — filter/count/group the payment rows (source.kind = "payments").
-  args (all optional): zones[] , branches[], grades[], studentTypes[] ("New"|"Old"), segments[] ("ICSE"|"OIS"),
-    dateFrom "yyyy-mm-dd", dateTo "yyyy-mm-dd",
-    groupBy: "zone"|"branch"|"grade"|"student_type"|"segment"|"month"|null, withMonths (bool, default true), limit (1-50, default 10).
-  Semantics: one row = one student's FIRST payment, so a count = number of payment records. Month grouping uses first_paid_date (yyyy-mm).
-  Branch/zone/grade names must match the data EXACTLY — copy spellings from source.zoneByBranch keys (branches) and source.zones (zones). Grades look like "Grade 1".."Grade 12", "K1", "K2".
-  To rank (top-N), set groupBy and read the groups array (already sorted desc by count).`;
-
-const ANALYZE_GRN_SPEC = `{"tool":"analyze_grn","args":{...}} — analyze the uploaded Pending-GRN file (only when source.kind = "grn_file").
-  args: filters: [{column, op, value}] with op one of "eq"|"neq"|"contains"|"gt"|"gte"|"lt"|"lte" (all filters AND-ed),
-    groupBy: column name or [col1, col2], aggregate: {op: "count"|"sum"|"avg"|"min"|"max", column: <numeric column for sum/avg/min/max>},
-    sortBy: {by: "count"|"value"|"group", dir: "asc"|"desc"}, limit (1-100, default 20).
-  Column names must match source.columns EXACTLY. With no groupBy and no aggregate, the tool returns the first matching rows (capped) so you can read examples.`;
-
-function buildSystemPrompt(source, today, toolRoundsUsed) {
-  const lines = [
-    'You are "Ask AI", the assistant embedded in K12 Central System — a logistics console for K12 Techno Services (schools). The user is on the "' + (source.pageTitle || source.page) + '" page.',
-    "",
-    "DATA SOURCE (the ONLY data you may use):",
-    JSON.stringify(source),
-    "",
-    "You are an AGENT: understand what the user is really asking (rephrase vague wording internally, e.g. \"Bangalore in January\" → zone Bangalore, January of the report's year), fetch exactly the data you need with tools, then answer.",
-    "",
-    "TOOLS — to call one, reply with ONLY a single JSON object on one line, no prose, no markdown fences:",
-    QUERY_PAYMENTS_SPEC,
-    ANALYZE_GRN_SPEC,
-    "",
-    "RULES:",
-    "1. If the source kind is \"none\", do NOT call tools — politely answer that this page has no data to analyse and say which pages do.",
-    "2. Never guess, estimate or invent numbers. Any figure in your final answer must come from a tool result (or from the source descriptor itself, e.g. total row count).",
-    "3. Tool results arrive as messages starting with [TOOL RESULT]. Read them carefully; call another tool if you need a different cut of the data.",
-    `4. Tool budget: you may request at most ${MAX_TOOL_ROUNDS} tool calls in total` + (toolRoundsUsed > 0 ? ` (already used: ${toolRoundsUsed})` : "") + ". When the budget is exhausted, answer from what you have.",
-    "5. FINAL ANSWER (plain prose, not JSON): direct answer first, numbers with Indian digit grouping (1,23,456), then at most 4 short supporting bullets. Mention the exact filters you applied (e.g. zone, month) when relevant.",
-    "6. If the data cannot answer the question (e.g. a field the source doesn't have), say so briefly and suggest what would help.",
-    "",
-    "Today is " + today + ".",
-  ];
-  return lines.join("\n");
-}
-
-// ---------------------------------------------------------------------------
-// Tool-call parsing: the model must reply with a single JSON object.
-// ---------------------------------------------------------------------------
-
+/** Fallback: parse a tool call the model wrote as text. */
 function parseToolCall(text) {
   const raw = String(text ?? "").trim();
   const start = raw.indexOf("{");
@@ -172,14 +228,11 @@ function parseToolCall(text) {
     return null;
   }
   if (!obj || typeof obj !== "object") return null;
-  // Our instructed format: {"tool":"query_payments","args":{...}}
   if (typeof obj.tool === "string") {
     let args = obj.args && typeof obj.args === "object" && !Array.isArray(obj.args) ? obj.args : {};
-    // Some models echo the envelope inside args — unwrap one level.
     if (typeof args.tool === "string" && args.args && typeof args.args === "object") args = args.args;
     return { tool: obj.tool, args };
   }
-  // Native tool-call format some models emit: {"name":"query_payments","arguments":{...}}
   if (typeof obj.name === "string" && obj.arguments && typeof obj.arguments === "object") {
     return { tool: obj.name.replace(/^tool_/, ""), args: obj.arguments };
   }
@@ -199,21 +252,26 @@ function sanitizeToolResults(toolResults) {
   return toolResults
     .filter((t) => t && typeof t.tool === "string" && t.result && typeof t.result === "object")
     .slice(-MAX_TOOL_ROUNDS)
-    .map((t) => {
-      let json;
-      try {
-        json = JSON.stringify(t.result);
-      } catch {
-        json = "{}";
-      }
-      if (json.length > MAX_TOOL_RESULT_CHARS) json = json.slice(0, MAX_TOOL_RESULT_CHARS) + " …(truncated)";
-      const argsJson = JSON.stringify(t.args ?? {});
-      return `[TOOL RESULT] you called ${t.tool} with ${argsJson} and got:\n${json}`;
-    });
+    .map((t) => ({
+      tool: String(t.tool).slice(0, 60),
+      args: t.args && typeof t.args === "object" ? t.args : {},
+      result: t.result,
+      toolCallId: typeof t.toolCallId === "string" ? t.toolCallId.slice(0, 80) : null,
+    }));
+}
+
+function toolResultJson(tr) {
+  let json;
+  try {
+    json = JSON.stringify(tr.result);
+  } catch {
+    json = "{}";
+  }
+  return json.length > MAX_TOOL_RESULT_CHARS ? json.slice(0, MAX_TOOL_RESULT_CHARS) + " …(truncated)" : json;
 }
 
 // ---------------------------------------------------------------------------
-// NIM call with model fallback
+// Provider call (native tools) — returns the assistant message object
 // ---------------------------------------------------------------------------
 
 async function callChat({ baseUrl, apiKey, model, systemPrompt, messages, signal }) {
@@ -230,22 +288,23 @@ async function callChat({ baseUrl, apiKey, model, systemPrompt, messages, signal
       temperature: 0.1,
       top_p: 0.9,
       // Reasoning models (gpt-oss) spend tokens thinking before the answer —
-      // a tight budget here empties `content` entirely, a huge one makes
-      // responses take minutes. 700 keeps tool-call replies fast.
+      // a tight budget here empties `content`, a huge one makes responses
+      // take minutes. 700 keeps replies fast.
       max_tokens: 700,
       ...(model.includes("gpt-oss") ? { reasoning_effort: "low" } : {}),
+      tools: TOOLS,
+      tool_choice: "auto",
       messages: [{ role: "system", content: systemPrompt }, ...messages],
     }),
   });
   if (!res.ok) {
     const errBody = await res.text().catch(() => "");
-    // Groq's gpt-oss emits native tool calls even when tools aren't declared;
-    // the API then 400s with tool_use_failed but includes the raw generation.
-    // Recover it so the agent loop can proceed.
+    // Some models emit a tool call even when tools weren't declared; the API
+    // 400s with tool_use_failed but includes the raw generation — recover it.
     const fg = /"failed_generation"\s*:\s*"((?:[^"\\]|\\.)*)"/.exec(errBody);
     if (fg) {
       try {
-        return JSON.parse(`"${fg[1]}"`); // unescape \n, \" etc.
+        return { content: JSON.parse(`"${fg[1]}"`) }; // unescape \n, \" etc.
       } catch {
         /* fall through to normal error */
       }
@@ -255,7 +314,7 @@ async function callChat({ baseUrl, apiKey, model, systemPrompt, messages, signal
     throw err;
   }
   const completion = await res.json();
-  return completion?.choices?.[0]?.message?.content ?? "";
+  return completion?.choices?.[0]?.message ?? null;
 }
 
 // ---------------------------------------------------------------------------
@@ -291,29 +350,51 @@ export default async function handler(req, res) {
     const messages = sanitizeMessages(body.messages);
     const toolResults = sanitizeToolResults(body.toolResults);
 
-    if (messages.length === 0 || messages[messages.length - 1].role !== "user") {
+    // The client strips its display-only tool markers, so the last entry is a
+    // user message on round 1 and reconstructed tool messages follow on later
+    // rounds — requiring a user message SOMEWHERE is enough.
+    if (!messages.some((m) => m.role === "user")) {
       res.writeHead(400, { ...cors, "Content-Type": "application/json" });
       return res.end(JSON.stringify({ ok: false, error: "No user message provided." }));
-    }
-    if (toolResults.length >= MAX_TOOL_ROUNDS) {
-      res.writeHead(400, { ...cors, "Content-Type": "application/json" });
-      return res.end(JSON.stringify({ ok: false, error: "Tool budget exhausted." }));
     }
 
     const today = new Date().toLocaleDateString("en-IN", { day: "numeric", month: "long", year: "numeric" });
     const systemPrompt = buildSystemPrompt(source, today, toolResults.length);
 
-    const nimMessages = [...messages, ...toolResults.map((content) => ({ role: "user", content }))];
-    if (toolResults.length > 0 && toolResults.length < MAX_TOOL_ROUNDS) {
-      nimMessages.push({
-        role: "user",
-        content: `[SYSTEM NOTE] Tool results received (${toolResults.length}/${MAX_TOOL_ROUNDS} budget used). Either call another tool (single JSON line) or give the final answer.`,
-      });
+    const nimMessages = [...messages];
+    for (const tr of toolResults) {
+      const resultJson = toolResultJson(tr);
+      if (tr.toolCallId) {
+        // Native tool-calling continuation (OpenAI pattern).
+        nimMessages.push({
+          role: "assistant",
+          content: null,
+          tool_calls: [
+            {
+              id: tr.toolCallId,
+              type: "function",
+              function: { name: tr.tool, arguments: JSON.stringify(tr.args ?? {}) },
+            },
+          ],
+        });
+        nimMessages.push({ role: "tool", tool_call_id: tr.toolCallId, content: resultJson });
+      } else {
+        // Text-protocol fallback for providers that didn't return native calls.
+        nimMessages.push({
+          role: "user",
+          content: `[TOOL RESULT] you called ${tr.tool} with ${JSON.stringify(tr.args ?? {})} and got:\n${resultJson}`,
+        });
+      }
     }
-    if (toolResults.length === MAX_TOOL_ROUNDS - 1) {
+    if (toolResults.length >= MAX_TOOL_ROUNDS) {
       nimMessages.push({
         role: "user",
-        content: "[SYSTEM NOTE] This is the LAST tool round. After this result you MUST give the final answer from the data you already have.",
+        content: "[SYSTEM NOTE] Tool budget exhausted. Give the FINAL ANSWER now from the data you already have.",
+      });
+    } else if (toolResults.length > 0) {
+      nimMessages.push({
+        role: "user",
+        content: `[SYSTEM NOTE] Tool results received (${toolResults.length}/${MAX_TOOL_ROUNDS}). Call another tool if needed, or give the final answer.`,
       });
     }
 
@@ -328,8 +409,9 @@ export default async function handler(req, res) {
         if (remaining < 5_000) break outer;
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), remaining);
+        const tag = `${provider.name}:${model}`;
         try {
-          const content = await callChat({
+          const msg = await callChat({
             baseUrl: provider.baseUrl,
             apiKey: provider.apiKey,
             model,
@@ -337,21 +419,41 @@ export default async function handler(req, res) {
             messages: nimMessages,
             signal: controller.signal,
           });
-          const cleaned = cleanAnswer(content);
-          if (!cleaned) {
-            lastError = `${provider.name} (${model}) returned no content.`;
+
+          // Native tool calls take priority over prose.
+          const rawCalls = Array.isArray(msg?.tool_calls) ? msg.tool_calls : [];
+          const content = cleanAnswer(msg?.content ?? "");
+          if (rawCalls.length === 0 && content) {
+            const tc = parseToolCall(content); // text fallback
+            if (tc) rawCalls.push({ id: null, function: { name: tc.tool, arguments: JSON.stringify(tc.args) } });
+          }
+          if (rawCalls.length > 0) {
+            const calls = [];
+            for (const tc of rawCalls.slice(0, 3)) {
+              const fn = tc?.function ?? {};
+              let args = {};
+              try {
+                args = typeof fn.arguments === "string" ? JSON.parse(fn.arguments || "{}") : fn.arguments ?? {};
+              } catch {
+                args = {};
+              }
+              const name = String(fn.name ?? "").replace(/^tool_/, "");
+              if (name) calls.push({ tool: name, args, toolCallId: typeof tc.id === "string" ? tc.id : null });
+            }
+            if (calls.length > 0) {
+              res.writeHead(200, { ...cors, "Content-Type": "application/json" });
+              return res.end(JSON.stringify({ ok: true, type: "tool_request", calls, model: tag }));
+            }
+          }
+          if (!content) {
+            lastError = `${tag} returned no content.`;
             continue;
           }
-          const toolCall = parseToolCall(cleaned);
-          if (toolCall) {
-            res.writeHead(200, { ...cors, "Content-Type": "application/json" });
-            return res.end(JSON.stringify({ ok: true, type: "tool_request", ...toolCall, model: `${provider.name}:${model}` }));
-          }
           res.writeHead(200, { ...cors, "Content-Type": "application/json" });
-          return res.end(JSON.stringify({ ok: true, type: "answer", answer: cleaned, model: `${provider.name}:${model}`, toolsUsed: toolResults.length }));
+          return res.end(JSON.stringify({ ok: true, type: "answer", answer: content, model: tag, toolsUsed: toolResults.length }));
         } catch (e) {
           if (e.name === "AbortError") {
-            lastError = `AI timed out after ${REQUEST_TIMEOUT_MS / 1000}s (${provider.name}:${model})`;
+            lastError = `AI timed out after ${REQUEST_TIMEOUT_MS / 1000}s (${tag})`;
             continue; // try the next candidate
           }
           lastError = e.message;

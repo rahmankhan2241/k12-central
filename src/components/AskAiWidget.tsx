@@ -12,17 +12,24 @@ import {
 } from "../askAiSource";
 
 type Msg = { role: "user" | "assistant"; content: string };
-type ToolResult = { tool: string; args: unknown; result: Record<string, unknown> };
+type ToolResult = {
+  tool: string;
+  args: unknown;
+  result: Record<string, unknown>;
+  toolCallId: string | null;
+};
 
 const MAX_TOOL_ROUNDS = 6;
 
 /**
  * Floating "Ask AI" button + chat panel with an agentic loop:
  *  1. POST question + light page-source descriptor
- *  2. server model replies with either a tool_request (JSON) or the answer
- *  3. we execute the tool locally against live page data (payments rows or
- *     the uploaded GRN file) and re-POST with the result
+ *  2. server model replies with native tool_calls or the final answer
+ *  3. we execute the tools locally against live page data and re-POST
  *  4. repeat until the model answers (capped rounds)
+ *
+ * The user only ever sees their question and the final answer; tool activity
+ * is a transient status line while the loop runs.
  */
 export default function AskAiWidget({ page }: { page: string }) {
   const [open, setOpen] = useState(false);
@@ -87,54 +94,55 @@ export default function AskAiWidget({ page }: { page: string }) {
     listRef.current?.scrollTo({ top: listRef.current.scrollHeight });
   }, [messages, busy, busyNote]);
 
-  async function askOnce(
-    history: Msg[],
-    toolResults: ToolResult[]
-  ): Promise<{ type: "answer"; answer: string; model?: string } | { type: "tool_request"; tool: string; args: unknown; model?: string }> {
-    const res = await fetch("/api/ask-ai", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        page,
-        pageTitle: pageTitle[page] ?? page,
-        source,
-        messages: history.slice(-12),
-        toolResults,
-      }),
-    });
-    const body = await res.json().catch(() => ({}));
-    if (!res.ok || body.ok === false) {
-      throw new Error(body.error || `Ask AI failed (${res.status})`);
-    }
-    return body;
-  }
-
   const send = async (rawText?: string) => {
     const text = (rawText ?? input).trim();
     if (!text || busy) return;
-    const withUser = [...messages, { role: "user" as const, content: text }];
+    const withUser: Msg[] = [...messages, { role: "user", content: text }];
     setMessages(withUser);
     setInput("");
     setBusy(true);
     setError(null);
     let history: Msg[] = withUser;
     try {
+      // Display-only tool markers, kept out of what the server receives.
+      let display: Msg[] = [...history];
       const toolResults: ToolResult[] = [];
       for (let round = 0; round <= MAX_TOOL_ROUNDS; round++) {
         setBusyNote(round === 0 ? "Thinking…" : `Checking the data (${round}/${MAX_TOOL_ROUNDS})…`);
-        const reply = await askOnce(history, toolResults);
-        if (reply.type === "answer") {
-          setMessages([...history, { role: "assistant", content: reply.answer }]);
+        const res = await fetch("/api/ask-ai", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            page,
+            pageTitle: pageTitle[page] ?? page,
+            source,
+            // History WITHOUT tool markers: user/assistant prose only.
+            messages: history.filter((m) => !m.content.startsWith("[called ")).slice(-12),
+            toolResults,
+          }),
+        });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok || body.ok === false) {
+          throw new Error(body.error || `Ask AI failed (${res.status})`);
+        }
+        if (body.type === "answer") {
+          setMessages([...history, { role: "assistant", content: body.answer }]);
           return;
         }
-        // Tool request → execute locally and continue the loop.
-        const result = executeAiTool(reply.tool, reply.args, toolCtx);
-        toolResults.push({ tool: reply.tool, args: reply.args, result });
+        // Tool request → execute locally, track results, show a status line.
+        const calls: Array<{ tool: string; args: unknown; toolCallId: string | null }> = Array.isArray(body.calls)
+          ? body.calls
+          : [{ tool: body.tool, args: body.args, toolCallId: null }];
+        display = [...history, { role: "assistant", content: `[called ${calls.map((c) => c.tool).join(", ")}]` }];
+        setMessages(display);
+        for (const c of calls) {
+          const result = executeAiTool(c.tool, c.args, toolCtx);
+          toolResults.push({ tool: c.tool, args: c.args, result, toolCallId: c.toolCallId ?? null });
+        }
         history = [
           ...history,
-          { role: "assistant", content: `[called ${reply.tool} ${JSON.stringify(reply.args ?? {})}]` },
+          { role: "assistant", content: `[called ${calls.map((c) => c.tool).join(", ")}]` },
         ];
-        setMessages(history);
       }
       setMessages([
         ...history,
@@ -142,7 +150,7 @@ export default function AskAiWidget({ page }: { page: string }) {
       ]);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
-      setMessages(history); // keep the user's message visible for a retry
+      setMessages(history.filter((m) => !m.content.startsWith("[called "))); // keep user msg for retry
     } finally {
       setBusy(false);
       setBusyNote("");
@@ -154,9 +162,7 @@ export default function AskAiWidget({ page }: { page: string }) {
       ? ["What are the total payments for Bangalore branch zone in January?", "Which 5 branches have the most students?", "How many ICSE students paid in March 2026?"]
       : page === "pending-grn" && grn
         ? ["Which vendor has the most pending GRNs?", "Show a summary by status column", "What is the average value by branch?"]
-        : page === "pending-grn"
-          ? null
-          : null;
+        : null;
 
   return (
     <>
@@ -202,13 +208,12 @@ export default function AskAiWidget({ page }: { page: string }) {
               </div>
             )}
             {messages.map((m, i) => {
-              // Tool-call steps are shown as small status lines, not chat bubbles.
+              // Tool-call steps are hidden entirely while the loop is idle —
+              // only the transient status line shows activity.
               if (m.role === "assistant" && m.content.startsWith("[called ")) {
-                return (
-                  <div key={i} className="askai-step" title={m.content}>
-                    🔎 Checking the data…
-                  </div>
-                );
+                return busy ? (
+                  <div key={i} className="askai-step">🔎 Checking the data…</div>
+                ) : null;
               }
               return (
                 <div key={i} className={`askai-msg ${m.role}`}>
