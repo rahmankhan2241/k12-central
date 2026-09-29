@@ -201,11 +201,21 @@ export default function AskAiWidget({ page }: { page: string }) {
                 )}
               </div>
             )}
-            {messages.map((m, i) => (
-              <div key={i} className={`askai-msg ${m.role}`}>
-                {m.content}
-              </div>
-            ))}
+            {messages.map((m, i) => {
+              // Tool-call steps are shown as small status lines, not chat bubbles.
+              if (m.role === "assistant" && m.content.startsWith("[called ")) {
+                return (
+                  <div key={i} className="askai-step" title={m.content}>
+                    🔎 Checking the data…
+                  </div>
+                );
+              }
+              return (
+                <div key={i} className={`askai-msg ${m.role}`}>
+                  {m.content}
+                </div>
+              );
+            })}
             {busy && <div className="askai-msg assistant askai-thinking">{busyNote || "Thinking…"}</div>}
             {error && <div className="askai-err">{error}</div>}
           </div>

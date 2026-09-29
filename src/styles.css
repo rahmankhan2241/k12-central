@@ -2674,3 +2674,15 @@ button.sync-pill.failed:hover {
     justify-content: space-between;
   }
 }
+
+/* Ask AI — intermediate tool-lookup status line (smaller than chat bubbles) */
+.askai-step {
+  align-self: flex-start;
+  font-size: 11px;
+  color: var(--text-secondary, #8a93a6);
+  background: transparent;
+  border: none;
+  padding: 0 4px;
+  margin: 2px 0;
+  font-style: italic;
+}
