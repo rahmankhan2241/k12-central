@@ -3,7 +3,8 @@
  * po_rows table in Supabase.
  *
  * Expected upload format (headers, case/space tolerant):
- *   PO Date | Category | Material Name | SKU Code | Existing Stock | PO Qty
+ *   PO Date | Category | Material Name | SKU Code | Edition (optional) |
+ *   Existing Stock | PO Qty
  */
 import * as XLSX from "xlsx";
 import { supabase } from "./supabaseClient";
@@ -14,6 +15,7 @@ export type PoRow = {
   category: string;
   material_name: string;
   sku_code: string;
+  edition: string;
   existing_stock: number;
   po_qty: number;
   uploaded_at?: string;
@@ -21,6 +23,17 @@ export type PoRow = {
 };
 
 export type PoNewRow = Omit<PoRow, "id" | "uploaded_at" | "updated_at">;
+
+/** Column order for display/export. Edition is optional (may be blank). */
+export const PO_COLUMNS = [
+  "po_date",
+  "category",
+  "material_name",
+  "sku_code",
+  "edition",
+  "existing_stock",
+  "po_qty",
+] as const;
 
 const HEADER_ALIASES: Record<string, keyof PoNewRow> = {
   "podate": "po_date",
@@ -32,6 +45,8 @@ const HEADER_ALIASES: Record<string, keyof PoNewRow> = {
   "skucode": "sku_code",
   "sku": "sku_code",
   "code": "sku_code",
+  "edition": "edition",
+  "ed": "edition",
   "existingstock": "existing_stock",
   "stock": "existing_stock",
   "poqty": "po_qty",
@@ -114,6 +129,7 @@ export async function parsePoWorkbook(file: File): Promise<PoParseResult> {
       category: "",
       material_name: "",
       sku_code: "",
+      edition: "",
       existing_stock: 0,
       po_qty: 0,
     };

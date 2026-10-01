@@ -10,6 +10,7 @@ create table if not exists public.po_rows (
   category       text not null default '',
   material_name  text not null default '',
   sku_code       text not null default '',
+  edition        text not null default '',
   existing_stock numeric not null default 0,
   po_qty         numeric not null default 0,
   uploaded_at    timestamptz not null default now(),

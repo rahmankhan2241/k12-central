@@ -25,6 +25,7 @@ const COLUMNS: { key: keyof PoRow; label: string }[] = [
   { key: "category", label: "Category" },
   { key: "material_name", label: "Material Name" },
   { key: "sku_code", label: "SKU Code" },
+  { key: "edition", label: "Edition" },
   { key: "existing_stock", label: "Existing Stock" },
   { key: "po_qty", label: "PO Qty" },
 ];
@@ -34,6 +35,7 @@ const EDITABLE: (keyof PoRow)[] = [
   "category",
   "material_name",
   "sku_code",
+  "edition",
   "existing_stock",
   "po_qty",
 ];
@@ -206,6 +208,7 @@ export default function PoPage() {
       category: r.category,
       material_name: r.material_name,
       sku_code: r.sku_code,
+      edition: r.edition,
       existing_stock: r.existing_stock,
       po_qty: r.po_qty,
     });
@@ -242,6 +245,7 @@ export default function PoPage() {
         r.category,
         r.material_name,
         r.sku_code,
+        r.edition,
         String(r.existing_stock),
         String(r.po_qty),
       ]
@@ -284,7 +288,8 @@ export default function PoPage() {
           <div>
             <div className="po-upload-title">PO Excel</div>
             <div className="po-upload-sub">
-              Format: PO Date | Category | Material Name | SKU Code | Existing Stock | PO Qty
+              Format: PO Date | Category | Material Name | SKU Code | Edition (optional) |
+              Existing Stock | PO Qty
               {rows.length > 0 && (
                 <>
                   {" · "}
@@ -609,7 +614,7 @@ export default function PoPage() {
               })}
             {!loading && filtered.length === 0 && (
               <tr>
-                <td colSpan={8} className="table-empty">
+                <td colSpan={9} className="table-empty">
                   {rows.length === 0
                     ? "No PO data yet — upload the PO Excel above to get started."
                     : "No rows match your search."}
@@ -623,7 +628,7 @@ export default function PoPage() {
                 <td colSpan={4}>Total ({filtered.length.toLocaleString("en-IN")} rows)</td>
                 <td className="num">{fmtNum(totals.stock)}</td>
                 <td className="num">{fmtNum(totals.qty)}</td>
-                <td />
+                <td colSpan={2} />
               </tr>
             </tfoot>
           )}
