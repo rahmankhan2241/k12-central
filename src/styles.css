@@ -2475,6 +2475,74 @@ button.sync-pill.failed:hover {
   color: var(--ink-faint);
 }
 
+/* ---- DateMultiSelect (month → dates, Excel-style) ---- */
+
+.msel-menu-wide {
+  width: 280px;
+}
+
+.msel-month-row {
+  font-weight: 600;
+}
+
+.msel-month-row.open {
+  background: var(--blue-50);
+}
+
+.msel-month-row > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.msel-expander {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--card);
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+}
+
+.msel-expander:hover {
+  border-color: var(--navy-600);
+  background: var(--blue-50);
+}
+
+.msel-count {
+  color: var(--ink-faint);
+  font-weight: 400;
+  font-size: 11.5px;
+  margin-left: 3px;
+}
+
+.msel-sublist {
+  margin: 1px 0 3px;
+}
+
+.msel-item.msel-sub {
+  padding-left: 33px;
+  font-weight: 400;
+  font-size: 12.5px;
+}
+
+.msel-foot {
+  padding: 6px 8px 3px;
+  border-top: 1px solid var(--line-soft);
+  margin-top: 4px;
+  font-size: 11.5px;
+  color: var(--ink-faint);
+}
+
 .segment-chip {
   display: inline-block;
   padding: 2px 9px;

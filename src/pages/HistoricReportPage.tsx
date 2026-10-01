@@ -3,6 +3,12 @@ import { useBranchZbhMapping } from "../useBranchZbhMapping";
 import { useIcseConfig } from "../useIcseConfig";
 import { useHistoricGlobal } from "../useHistoricFetch";
 import MultiSelect from "../components/MultiSelect";
+import DateMultiSelect, {
+  dateLabel,
+  monthLabel,
+  EMPTY_DATE_SELECTION,
+  type DateSelection,
+} from "../components/DateMultiSelect";
 import { findZoneByBranchEduvate } from "../types";
 import type { BranchZbhMapping } from "../types";
 import { exportPaymentExcel } from "../exportPaymentExcel";
@@ -190,6 +196,9 @@ export default function HistoricReportPage() {
   const [grade, setGrade] = useState<string[]>([]);
   const [segment, setSegment] = useState<string[]>([]);
   const [zoneFilter, setZoneFilter] = useState<string[]>([]);
+  // Excel-style month/date filter: months fully selected + individually
+  // picked dates in partially-selected months.
+  const [dateSel, setDateSel] = useState<DateSelection>(EMPTY_DATE_SELECTION);
   const [skippedBranches, setSkippedBranches] = useState<Set<string>>(new Set());
   const [manualZone, setManualZone] = useState<Record<string, Partial<BranchZbhMapping>>>({});
   const [zoneHint, setZoneHint] = useState<Record<string, string>>({});
@@ -254,12 +263,17 @@ export default function HistoricReportPage() {
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
+    const hasDateFilter = dateSel.months.length > 0 || dateSel.dates.length > 0;
     return enriched.filter((r) => {
       if (!includesAny(branch, r.branch)) return false;
       if (!includesAny(studentType, r.student_type)) return false;
       if (!includesAny(grade, r.grade)) return false;
       if (!includesAny(zoneFilter, r.zone)) return false;
       if (!includesAny(segment, r.segment)) return false;
+      if (hasDateFilter) {
+        const d = (r.first_paid_date ?? "").slice(0, 10);
+        if (!dateSel.months.includes(d.slice(0, 7)) && !dateSel.dates.includes(d)) return false;
+      }
       if (!q) return true;
       return (
         r.branch.toLowerCase().includes(q) ||
@@ -269,7 +283,34 @@ export default function HistoricReportPage() {
       );
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [enriched, search, branch.join("|"), studentType.join("|"), grade.join("|"), segment.join("|"), zoneFilter.join("|")]);
+  }, [enriched, search, branch.join("|"), studentType.join("|"), grade.join("|"), segment.join("|"), zoneFilter.join("|"), dateSel.months.join("|"), dateSel.dates.join("|")]);
+
+  // Month + per-month date options for the date filter — cascaded by every
+  // OTHER filter (Excel-style), never pruned against the selection itself.
+  const dateOptions = useMemo(() => {
+    const byMonth = new Map<string, Set<string>>();
+    for (const r of enriched) {
+      const d = (r.first_paid_date ?? "").slice(0, 10);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) continue;
+      if (!includesAny(zoneFilter, r.zone)) continue;
+      if (!includesAny(branch, r.branch)) continue;
+      if (!includesAny(studentType, r.student_type)) continue;
+      if (!includesAny(grade, r.grade)) continue;
+      if (!includesAny(segment, r.segment)) continue;
+      const ym = d.slice(0, 7);
+      let set = byMonth.get(ym);
+      if (!set) {
+        set = new Set();
+        byMonth.set(ym, set);
+      }
+      set.add(d);
+    }
+    const months = [...byMonth.keys()].sort();
+    const datesByMonth: Record<string, string[]> = {};
+    for (const [ym, set] of byMonth) datesByMonth[ym] = [...set].sort();
+    return { months, datesByMonth };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enriched, zoneFilter.join("|"), branch.join("|"), studentType.join("|"), grade.join("|"), segment.join("|")]);
 
   const branchOptions = useMemo(() => {
     const set = new Set<string>();
@@ -311,15 +352,26 @@ export default function HistoricReportPage() {
     studentType.length > 0 ||
     grade.length > 0 ||
     segment.length > 0 ||
-    zoneFilter.length > 0;
+    zoneFilter.length > 0 ||
+    dateSel.months.length > 0 ||
+    dateSel.dates.length > 0;
 
   const joinList = (sel: string[]) => (sel.length <= 3 ? sel.join(", ") : `${sel.length} selected`);
+  const dateFilterSummary = (() => {
+    const parts: string[] = dateSel.months.map((m) => monthLabel(m));
+    if (dateSel.dates.length > 0) {
+      if (dateSel.dates.length <= 3) parts.push(...dateSel.dates.map((d) => dateLabel(d)));
+      else parts.push(`${dateSel.dates.length} dates`);
+    }
+    return parts.join(", ");
+  })();
   const activeFilterSummary = [
     zoneFilter.length > 0 && `Zone: ${joinList(zoneFilter)}`,
     branch.length > 0 && `Branch: ${joinList(branch)}`,
     studentType.length > 0 && `Type: ${joinList(studentType)}`,
     grade.length > 0 && `Grade: ${joinList(grade)}`,
     segment.length > 0 && `Segment: ${joinList(segment)}`,
+    dateFilterSummary && `Date: ${dateFilterSummary}`,
     search.trim() && `Search: “${search.trim()}”`,
   ]
     .filter(Boolean)
@@ -579,6 +631,14 @@ export default function HistoricReportPage() {
                 selected={segment}
                 onChange={setSegment}
                 ariaLabel="Filter by segment"
+              />
+              <DateMultiSelect
+                label="All Dates"
+                months={dateOptions.months}
+                datesByMonth={dateOptions.datesByMonth}
+                selected={dateSel}
+                onChange={setDateSel}
+                ariaLabel="Filter by payment date — months expand to individual dates"
               />
             </div>
             <div className="historic-toolbar-right">
