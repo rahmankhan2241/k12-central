@@ -173,7 +173,27 @@ const ANALYZE_GRN_SCHEMA = {
   },
 };
 
-const TOOLS = [QUERY_PAYMENTS_SCHEMA, ANALYZE_GRN_SCHEMA];
+const FORECAST_PAYMENTS_SCHEMA = {
+  type: "function",
+  function: {
+    name: "forecast_payments",
+    description:
+      'Predict a zone\'s future payments from historical trends. Use when the user asks what payments WILL BE in a future year ("what will 2027-28 payments for Bangalore be", "predict/forecast/estimate next year"). The tool loads the last ~3 academic years, computes grade-wise growth trends, and projects the target year. Does deterministic math in code — do NOT invent numbers yourself.',
+    parameters: {
+      type: "object",
+      properties: {
+        zone: { type: "string", description: 'Zone name EXACTLY as in source.zones, e.g. "Bangalore". Required.' },
+        targetYear: { type: "string", description: 'Academic year to predict, e.g. "2027-28". Default "2027-28".' },
+        branches: { type: "array", items: { type: "string" }, description: "Optional branch names to restrict the forecast to specific branches in the zone." },
+        segments: { type: "array", items: { type: "string", enum: ["ICSE", "OIS"] }, description: "Optional segment filter." },
+        studentTypes: { type: "array", items: { type: "string", enum: ["New", "Old"] }, description: "Optional student type filter." },
+      },
+      required: ["zone"],
+    },
+  },
+};
+
+const TOOLS = [QUERY_PAYMENTS_SCHEMA, ANALYZE_GRN_SCHEMA, FORECAST_PAYMENTS_SCHEMA];
 
 // ---------------------------------------------------------------------------
 // Prompt
@@ -203,7 +223,8 @@ function buildSystemPrompt(source, today, toolRoundsUsed) {
     '2. You can ALWAYS call tools — even when source.kind is "none" (a page without its own data), the whole-database query_payments still answers payment questions across every academic year. Only say you lack data after a tool result comes back empty.',
     `3. Tool budget: at most ${MAX_TOOL_ROUNDS} tool calls in total` + (toolRoundsUsed > 0 ? ` (already used: ${toolRoundsUsed})` : "") + ". Once you have enough data (or the budget is spent), answer.",
     '4. FINAL ANSWER — Markdown, NOT JSON, no tool talk. Lead with the direct answer (e.g. "Total payments for Bangalore in January is **2,841**."), numbers with Indian digit grouping (1,23,456). Format for readability: **bold** every important figure and percentage, and when data has a tabular shape (per-year, per-branch, per-zone comparisons, top-N rankings) present it as a proper Markdown table with a short header row instead of a bullet list. Keep tables small (at most ~10 rows — group the tail as "Other"). Finish with at most 3 short bullets of observations, and mention the filters you applied when relevant.',
-    "5. If the data cannot answer the question (e.g. a field the source doesn't have), say so briefly and suggest what would help.",
+    '5. FORECASTS: when forecast_payments returned a projection, give the projected total with its range (e.g. "≈ **14,300** (range 13,800–14,900)"), a compact grade-wise table (history vs projection), the biggest drivers, and ALWAYS 1-2 bullets of honest caveats: this is a trend extrapolation, not a guarantee — new branches, fee changes or campus launches break trends.',
+    "6. If the data cannot answer the question (e.g. a field the source doesn't have), say so briefly and suggest what would help.",
     "",
     "Today is " + today + ".",
   ];

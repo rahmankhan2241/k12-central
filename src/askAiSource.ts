@@ -403,6 +403,161 @@ export function executeAnalyzeGrn(
 }
 
 // ---------------------------------------------------------------------------
+// Tool: forecast_payments (trend extrapolation — code does the math)
+// ---------------------------------------------------------------------------
+
+type ForecastArgs = {
+  zone?: string;
+  branches?: string[];
+  segments?: string[];
+  studentTypes?: string[];
+  targetYear?: string;
+};
+
+/** Simple least-squares linear projection over evenly spaced years. */
+function linearProject(values: number[]): { slope: number; projected: number } | null {
+  const n = values.length;
+  if (n < 2) return null;
+  const meanX = (n - 1) / 2;
+  const meanY = values.reduce((a, b) => a + b, 0) / n;
+  let num = 0;
+  let den = 0;
+  for (let i = 0; i < n; i++) {
+    num += (i - meanX) * (values[i] - meanY);
+    den += (i - meanX) ** 2;
+  }
+  const slope = den === 0 ? 0 : num / den;
+  // Project one step beyond the last observed point.
+  const projected = Math.max(0, Math.round(meanY + slope * (n - meanX)));
+  return { slope, projected };
+}
+
+/**
+ * Grade-wise trend forecast: groups 3 years of history per grade, projects
+ * each grade with a linear trend, sanity-checks against CAGR, and returns
+ * both the per-grade table and a zone total with an honest low/high range.
+ */
+export async function executeForecastPayments(
+  rawArgs: ForecastArgs,
+  ctx: AiToolContext
+): Promise<Record<string, unknown>> {
+  const args = rawArgs ?? {};
+  const zone = String(args.zone ?? "").trim().toLowerCase();
+  const branchFilter = normList(args.branches)?.map((b) => b.toLowerCase());
+  const segmentFilter = normList(args.segments)?.map((s) => s.toLowerCase());
+  const typeFilter = normList(args.studentTypes)?.map((s) => s.toLowerCase());
+  const targetYear = String(args.targetYear ?? "2027-28").trim();
+
+  if (!zone) {
+    return { error: "forecast_payments needs a zone — ask the user which zone they mean." };
+  }
+  if (!ctx.loadPaymentsRows) {
+    return { error: "Historic payment data is not available on this page." };
+  }
+
+  // Load every historical year (memory → cache → network).
+  const historyYears = [...ALL_SESSION_YEARS].filter((y) => y !== targetYear).sort();
+  const rows = (await ctx.loadPaymentsRows(historyYears)).filter((r) => {
+    if (r.zone.toLowerCase() !== zone) return false;
+    if (branchFilter && !branchFilter.includes(r.branch.toLowerCase())) return false;
+    if (segmentFilter && !segmentFilter.includes(r.segment.toLowerCase())) return false;
+    if (typeFilter && !typeFilter.includes(r.student_type.toLowerCase())) return false;
+    return true;
+  });
+
+  if (rows.length === 0) {
+    return {
+      tool: "forecast_payments",
+      zone: args.zone,
+      targetYear,
+      error: `No payment history found for zone "${args.zone}". Check the exact zone name (they are listed in the page data source).`,
+      knownZones: [...new Set((await ctx.loadPaymentsRows([...ALL_SESSION_YEARS])).map((r) => r.zone))].sort(),
+    };
+  }
+
+  const yearsObserved = [...new Set(rows.map((r) => r.session_year))].sort();
+  // counts[year] = Map grade -> count
+  const counts = new Map<string, Map<string, number>>();
+  const totalsByYear = new Map<string, number>();
+  const newShareByYear = new Map<string, { newCount: number; total: number }>();
+  for (const r of rows) {
+    const y = r.session_year;
+    let byGrade = counts.get(y);
+    if (!byGrade) {
+      byGrade = new Map();
+      counts.set(y, byGrade);
+    }
+    byGrade.set(r.grade, (byGrade.get(r.grade) ?? 0) + 1);
+    totalsByYear.set(y, (totalsByYear.get(y) ?? 0) + 1);
+    const sh = newShareByYear.get(y) ?? { newCount: 0, total: 0 };
+    sh.total++;
+    if (r.student_type === "New") sh.newCount++;
+    newShareByYear.set(y, sh);
+  }
+
+  const grades = [
+    ...new Set([...counts.values()].flatMap((m) => [...m.keys()])),
+  ].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+
+  const gradeRows = grades.map((g) => {
+    const series = yearsObserved.map((y) => counts.get(y)?.get(g) ?? 0);
+    const lin = linearProject(series);
+    // CAGR sanity check: if all years > 0, project via compound growth too.
+    let cagrProjected: number | null = null;
+    if (series.every((v) => v > 0)) {
+      const ratio = series[series.length - 1] / series[0];
+      const years = series.length - 1;
+      cagrProjected = Math.round(series[series.length - 1] * Math.pow(ratio, 1 / years));
+    }
+    const candidates = [lin?.projected, cagrProjected].filter((v): v is number => v != null);
+    const mid = candidates.length
+      ? Math.round(candidates.reduce((a, b) => a + b, 0) / candidates.length)
+      : (series[series.length - 1] ?? 0);
+    const low = Math.min(...candidates, mid);
+    const high = Math.max(...candidates, mid);
+    return {
+      grade: g,
+      history: Object.fromEntries(yearsObserved.map((y, i) => [y, series[i]])),
+      projected: mid,
+      range: candidates.length > 1 ? [low, high] : null,
+    };
+  });
+
+  const zoneProjected = gradeRows.reduce((a, g) => a + g.projected, 0);
+  const zoneLow = gradeRows.reduce((a, g) => a + (g.range ? g.range[0] : g.projected), 0);
+  const zoneHigh = gradeRows.reduce((a, g) => a + (g.range ? g.range[1] : g.projected), 0);
+  const historyTotals = yearsObserved.map((y) => ({ year: y, total: totalsByYear.get(y) ?? 0 }));
+  const lastTotal = historyTotals[historyTotals.length - 1]?.total ?? 0;
+  const growthPct =
+    historyTotals.length >= 2 && historyTotals[0].total > 0
+      ? Math.round(((lastTotal / historyTotals[0].total - 1) * 100) * 10) / 10
+      : null;
+
+  return {
+    tool: "forecast_payments",
+    zone: args.zone,
+    targetYear,
+    method:
+      "Per-grade linear trend over the observed years, averaged with a CAGR projection where possible. Extrapolation of past first-payments — NOT a guarantee; new branches, fee changes or campus launches break trends.",
+    historyYears: yearsObserved,
+    historyTotals,
+    zoneGrowthPctFirstToLast: growthPct,
+    newVsOldShare: Object.fromEntries(
+      yearsObserved.map((y) => {
+        const sh = newShareByYear.get(y)!;
+        return [y, { new: sh.newCount, old: sh.total - sh.newCount }];
+      })
+    ),
+    gradeWise: gradeRows,
+    projectedTotal: zoneProjected,
+    projectedRange: [zoneLow, zoneHigh],
+    lastActualTotal: lastTotal,
+    note:
+      "Present the projected total with its range, mention the biggest growing grades, and state the assumptions/caveats clearly. Never present the projection as certain.",
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Dispatcher used by the widget
 // ---------------------------------------------------------------------------
 
@@ -439,6 +594,9 @@ export async function executeAiTool(
         };
       }
       return executeQueryPayments(rows, a);
+    }
+    if (name === "forecast_payments") {
+      return executeForecastPayments((args ?? {}) as ForecastArgs, ctx);
     }
     if (name === "analyze_grn") {
       let grn = ctx.grn ?? null;
