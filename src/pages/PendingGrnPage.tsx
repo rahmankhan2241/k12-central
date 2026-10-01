@@ -13,6 +13,11 @@ import {
 import type { BranchZbhMapping, ParsedReport, ReportRow } from "../types";
 import { registerGrnSource, unregisterGrnSource } from "../askAiSource";
 import {
+  loadGrnSnapshot,
+  saveGrnSnapshot,
+  type GrnSnapshot,
+} from "../grnSnapshot";
+import {
   AlertIcon,
   CheckCircleIcon,
   CloseIcon,
@@ -32,6 +37,10 @@ export default function PendingGrnPage() {
   const [prepared, setPrepared] = useState<PreparedReport | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [report, setReport] = useState<ParsedReport | null>(null);
+  // Cloud snapshot of the last uploaded file — restored on load so the page
+  // always shows the last-updated data, even after a reload or on another PC.
+  const [snapshotStatus, setSnapshotStatus] = useState<"loading" | "saved" | "saving" | "failed" | "none">("loading");
+  const [snapshotError, setSnapshotError] = useState<string | null>(null);
   const [banner, setBanner] = useState<{
     kind: "error" | "success";
     missing: string[];
@@ -55,6 +64,36 @@ export default function PendingGrnPage() {
   const PAGE_SIZE = 100;
 
   const validationOk = banner?.kind === "success";
+
+  // Restore the last-uploaded GRN from the database on first load (before the
+  // user picks a fresh file this session).
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const snap = await loadGrnSnapshot();
+      if (cancelled) return;
+      if (!snap) {
+        setSnapshotStatus("none");
+        return;
+      }
+      setReport((prev) => {
+        if (prev) return prev; // a file was already picked this session — never clobber it
+        const rows: ReportRow[] = snap.rows.map((cells, i) => ({ id: i, cells }));
+        return {
+          fileName: snap.fileName,
+          fileSize: snap.fileSize,
+          sheetName: snap.sheetName,
+          columns: snap.columns,
+          rows,
+          uploadedAt: new Date(snap.uploadedAt),
+        };
+      });
+      setSnapshotStatus("saved");
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Expose the uploaded file to the Ask AI agent (it analyses it in memory).
   useEffect(() => {
@@ -140,6 +179,26 @@ export default function PendingGrnPage() {
     });
     setFilter("");
     setPage(0);
+
+    // Persist the parsed file so this report survives reloads / other devices.
+    const snapshot: GrnSnapshot = {
+      fileName: file.name,
+      sheetName,
+      columns: fileColumns,
+      rows: rows.map((r) => r.cells.map((c) => String(c))),
+      rowCount: rows.length,
+      fileSize: file.size,
+      uploadedAt: new Date().toISOString(),
+    };
+    setSnapshotStatus("saving");
+    setSnapshotError(null);
+    void saveGrnSnapshot(snapshot).then((res) => {
+      if (res.ok) setSnapshotStatus("saved");
+      else {
+        setSnapshotStatus("failed");
+        setSnapshotError(res.error ?? "Could not save to the database.");
+      }
+    });
   };
 
   const exportCsv = async () => {
@@ -332,10 +391,16 @@ export default function PendingGrnPage() {
               <div className="file-banner-meta">
                 Sheet “{report.sheetName}” · {formatBytes(report.fileSize)} ·{" "}
                 {report.rows.length.toLocaleString("en-IN")} rows · uploaded{" "}
-                {report.uploadedAt.toLocaleTimeString("en-IN", {
+                {report.uploadedAt.toLocaleString("en-IN", {
+                  day: "numeric",
+                  month: "short",
                   hour: "2-digit",
                   minute: "2-digit",
                 })}
+                {" · "}
+                {snapshotStatus === "saving" && "Saving to cloud…"}
+                {snapshotStatus === "saved" && "Saved to cloud ✓"}
+                {snapshotStatus === "failed" && `Cloud save failed${snapshotError ? ` — ${snapshotError}` : ""}`}
               </div>
             </div>
             <div className="file-banner-actions">

@@ -63,7 +63,11 @@ export type PaymentRowLite = {
   student_type: string;
   segment: string;
   first_paid_date: string;
+  session_year: string;
 };
+
+/** Every academic year present in the database (payment_report_rows). */
+export const ALL_SESSION_YEARS = ["2026-27", "2025-26", "2024-25"] as const;
 
 export function enrichPayments(
   rows: Array<{
@@ -71,6 +75,7 @@ export function enrichPayments(
     grade: string;
     student_type: string;
     first_paid_date: string;
+    session_year?: string;
   }>,
   zoneByBranch: Map<string, string>,
   icseKeys: Set<string>
@@ -84,6 +89,7 @@ export function enrichPayments(
       student_type: r.student_type,
       segment: icseKeys.has(key) ? "ICSE" : "OIS",
       first_paid_date: r.first_paid_date ?? "",
+      session_year: r.session_year ?? "",
     };
   });
 }
@@ -98,14 +104,18 @@ type PaymentsArgs = {
   grades?: string[];
   studentTypes?: string[];
   segments?: string[];
+  /** Academic years to include, e.g. ["2024-25"]. Omit = current page's year. */
+  sessionYears?: string[];
+  /** true = query EVERY academic year in the database. */
+  allYears?: boolean;
   dateFrom?: string;
   dateTo?: string;
-  groupBy?: "zone" | "branch" | "grade" | "student_type" | "segment" | "month" | null;
+  groupBy?: "zone" | "branch" | "grade" | "student_type" | "segment" | "month" | "session_year" | null;
   withMonths?: boolean;
   limit?: number;
 };
 
-const GROUP_FIELDS = ["zone", "branch", "grade", "student_type", "segment"] as const;
+const GROUP_FIELDS = ["zone", "branch", "grade", "student_type", "segment", "session_year"] as const;
 
 function monthKey(dateStr: string): string {
   return /^\d{4}-\d{2}/.test(dateStr) ? dateStr.slice(0, 7) : "(no date)";
@@ -127,12 +137,14 @@ export function executeQueryPayments(
   const grades = normList(args.grades)?.map((g) => g.toLowerCase());
   const studentTypes = normList(args.studentTypes)?.map((s) => s.toLowerCase());
   const segments = normList(args.segments)?.map((s) => s.toLowerCase());
+  const years = args.allYears ? undefined : normList(args.sessionYears)?.map((y) => y.toLowerCase());
   const dateFrom = typeof args.dateFrom === "string" && /^\d{4}-\d{2}-\d{2}$/.test(args.dateFrom) ? args.dateFrom : undefined;
   const dateTo = typeof args.dateTo === "string" && /^\d{4}-\d{2}-\d{2}$/.test(args.dateTo) ? args.dateTo : undefined;
   const groupBy = GROUP_FIELDS.includes(args.groupBy as never) || args.groupBy === "month" ? args.groupBy : null;
   const limit = Math.min(Math.max(Number(args.limit) || 10, 1), 50);
 
   const match = (r: PaymentRowLite): boolean => {
+    if (!args.allYears && years && !years.includes((r.session_year ?? "").toLowerCase())) return false;
     if (zones && !zones.includes(r.zone.toLowerCase())) return false;
     if (branches && !branches.includes(r.branch.toLowerCase())) return false;
     if (grades && !grades.includes(r.grade.toLowerCase())) return false;
@@ -177,6 +189,8 @@ export function executeQueryPayments(
   return {
     tool: "query_payments",
     filtersEcho: {
+      ...(args.allYears ? { allYears: true } : {}),
+      ...(years ? { sessionYears: years } : {}),
       ...(zones ? { zones } : {}),
       ...(branches ? { branches } : {}),
       ...(grades ? { grades } : {}),
@@ -189,6 +203,7 @@ export function executeQueryPayments(
     groupCount: groups.size,
     ...(groupBy ? { groups: outGroups } : {}),
     availableMonths: [...matchedMonths].sort(),
+    years: [...new Set(rows.map((r) => r.session_year).filter(Boolean))].sort(),
   };
 }
 
@@ -387,27 +402,51 @@ export function executeAnalyzeGrn(
 // ---------------------------------------------------------------------------
 
 export type AiToolContext = {
+  /** Enriched rows of the page's year (already in memory). */
   paymentsRows?: PaymentRowLite[];
+  /** Loads + enriches other academic years on demand (whole-database access). */
+  loadPaymentsRows?: (years: string[]) => Promise<PaymentRowLite[]>;
   grn?: GrnSource | null;
+  /** Fetches the last saved GRN snapshot from the database (works on any page). */
+  loadGrn?: () => Promise<GrnSource | null>;
 };
 
-export function executeAiTool(
+export async function executeAiTool(
   name: string,
   args: unknown,
   ctx: AiToolContext
-): Record<string, unknown> {
+): Promise<Record<string, unknown>> {
   try {
     if (name === "query_payments") {
-      if (!ctx.paymentsRows || ctx.paymentsRows.length === 0) {
-        return { error: "Payment data is not available right now (wrong page or still loading)." };
+      const a = (args ?? {}) as PaymentsArgs;
+      let rows: PaymentRowLite[] = ctx.paymentsRows ?? [];
+      // Cross-year / whole-database question → load the requested years first
+      // (memory → IndexedDB cache → network, via the historic provider).
+      if ((a.allYears || (a.sessionYears && a.sessionYears.length > 0)) && ctx.loadPaymentsRows) {
+        const requested = a.allYears ? [...ALL_SESSION_YEARS] : normList(a.sessionYears) ?? [];
+        const loaded = await ctx.loadPaymentsRows(requested);
+        if (loaded.length > 0) rows = loaded;
       }
-      return executeQueryPayments(ctx.paymentsRows, (args ?? {}) as PaymentsArgs);
+      if (!rows || rows.length === 0) {
+        return {
+          error:
+            "No payment rows are available. The user may still be loading the data — suggest trying again, or narrow to a specific academic year.",
+        };
+      }
+      return executeQueryPayments(rows, a);
     }
     if (name === "analyze_grn") {
-      if (!ctx.grn) {
-        return { error: "No GRN file is uploaded on the Pending GRN page right now." };
+      let grn = ctx.grn ?? null;
+      // Not on the Pending GRN page? The last uploaded file is saved in the
+      // database — fetch it and analyse that.
+      if (!grn && ctx.loadGrn) grn = await ctx.loadGrn();
+      if (!grn) {
+        return {
+          error:
+            "No GRN file is available. Ask the user to upload one on the Pending GRN page — it is then saved to the database automatically.",
+        };
       }
-      return executeAnalyzeGrn(ctx.grn, (args ?? {}) as GrnArgs);
+      return executeAnalyzeGrn(grn, (args ?? {}) as GrnArgs);
     }
     return { error: `Unknown tool "${name}".` };
   } catch (e) {
@@ -430,6 +469,8 @@ export type AiPageSource =
       grades: string[];
       /** Months (yyyy-mm) that actually have first_paid_date data. */
       dataMonths: string[];
+      /** Academic years the whole-database tool can query. */
+      yearsAvailable: string[];
       zones: string[];
       zoneByBranch: Record<string, string>;
       icseRules: Array<{ branch: string; grade: string }>;
@@ -449,6 +490,7 @@ export function buildPageSource(opts: {
   pageTitle: string;
   historicRows?: Array<{ branch: string; grade: string; first_paid_date?: string }>;
   year?: string;
+  yearsAvailable?: string[];
   zoneByBranch?: Map<string, string>;
   icseRules?: Array<{ branch: string; grade: string }>;
   grn?: GrnSource | null;
@@ -477,6 +519,7 @@ export function buildPageSource(opts: {
       rowCount: opts.historicRows?.length ?? 0,
       grades,
       dataMonths,
+      yearsAvailable: opts.yearsAvailable ?? [],
       zones,
       zoneByBranch: Object.fromEntries(zoneByBranch),
       icseRules: opts.icseRules ?? [],

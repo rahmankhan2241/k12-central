@@ -25,6 +25,11 @@ export type HistoricGlobalState = {
   loadError: string | null;
   selectedYear: string;
   setSelectedYear: (year: string) => void;
+  /**
+   * Loads one academic year (memory → IndexedDB cache → network) and returns
+   * its rows. Used by Ask AI to query years other than the selected one.
+   */
+  loadYear: (year: string) => Promise<import("./types").PaymentReportRow[]>;
   /** True when the DB is missing the session_year column (migration pending). */
   needsMigration: boolean;
   /** Runs the WHOLE pipeline for the given year: Eduvate → filter/dedupe → Supabase → reload UI. */
@@ -259,6 +264,15 @@ export function HistoricProvider({ children }: { children: ReactNode }) {
     [loadAllRows]
   );
 
+  /** Await-able year loader for non-UI consumers (Ask AI cross-year queries). */
+  const loadYear = useCallback(
+    async (year: string) => {
+      if (!rowsByYearRef.current[year]) await loadAllRows(year);
+      return rowsByYearRef.current[year] ?? [];
+    },
+    [loadAllRows]
+  );
+
   /**
    * Runs the whole pipeline for one academic year and AWAITS every step:
    *  1. Serverless: login to Eduvate → download that session's CSV →
@@ -320,6 +334,7 @@ export function HistoricProvider({ children }: { children: ReactNode }) {
     loadError,
     selectedYear,
     setSelectedYear,
+    loadYear,
     needsMigration,
     fetchNow,
     reloadLogs: loadLogs,

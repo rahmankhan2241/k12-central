@@ -3,6 +3,7 @@ import { useHistoricGlobal } from "../useHistoricFetch";
 import { useBranchZbhMapping } from "../useBranchZbhMapping";
 import { useIcseConfig } from "../useIcseConfig";
 import {
+  ALL_SESSION_YEARS,
   buildPageSource,
   enrichPayments,
   executeAiTool,
@@ -10,6 +11,7 @@ import {
   type GrnSource,
   type PaymentRowLite,
 } from "../askAiSource";
+import { loadGrnSnapshot } from "../grnSnapshot";
 
 type Msg = { role: "user" | "assistant"; content: string; trace?: TraceStep[] };
 type ToolResult = {
@@ -183,24 +185,59 @@ export default function AskAiWidget({ page }: { page: string }) {
     settings: "Settings",
   };
 
-  // Live tool context for the page the user is on.
+  // Live tool context. The AI can reach the WHOLE database from any page:
+  // query_payments spans every academic year (other years load on demand from
+  // the IndexedDB cache / Supabase), and analyze_grn falls back to the last
+  // saved GRN snapshot in the database when no file is open on this page.
   const toolCtx = useMemo(() => {
-    if (page === "historic-report") {
-      const zoneByBranch = new Map<string, string>();
-      for (const r of mapping) {
-        if (r.zone) zoneByBranch.set(r.branchEduvate, r.zone);
+    const zoneByBranch = new Map<string, string>();
+    for (const r of mapping) {
+      if (r.zone) zoneByBranch.set(r.branchEduvate, r.zone);
+    }
+    const icseKeys = new Set(
+      icseRules.map((r) => `${r.branch.trim().toLowerCase()}|${r.grade.trim().toLowerCase()}`)
+    );
+    const enrich = (
+      rows: Array<{
+        branch: string;
+        grade: string;
+        student_type: string;
+        first_paid_date: string;
+        session_year?: string;
+      }>
+    ) => enrichPayments(rows, zoneByBranch, icseKeys);
+
+    const loadPaymentsRows = async (years: string[]): Promise<PaymentRowLite[]> => {
+      const out: PaymentRowLite[] = [];
+      for (const y of years) {
+        const rs =
+          y === historic.selectedYear ? historic.rows ?? [] : await historic.loadYear(y);
+        out.push(...enrich(rs));
       }
-      const icseKeys = new Set(
-        icseRules.map((r) => `${r.branch.trim().toLowerCase()}|${r.grade.trim().toLowerCase()}`)
-      );
-      const rows: PaymentRowLite[] = enrichPayments(historic.rows ?? [], zoneByBranch, icseKeys);
-      return { paymentsRows: rows, grn: null as GrnSource | null };
+      return out;
+    };
+
+    const loadGrn = async (): Promise<GrnSource | null> => {
+      const snap = await loadGrnSnapshot();
+      if (!snap) return null;
+      return {
+        fileName: snap.fileName,
+        columns: snap.columns,
+        rowCount: snap.rowCount,
+        getRows: () => snap.rows,
+      };
+    };
+
+    if (page === "historic-report") {
+      const rows: PaymentRowLite[] = enrich(historic.rows ?? []);
+      return { paymentsRows: rows, loadPaymentsRows, grn: null as GrnSource | null, loadGrn };
     }
     if (page === "pending-grn") {
-      return { paymentsRows: undefined, grn };
+      return { paymentsRows: undefined, loadPaymentsRows, grn, loadGrn };
     }
-    return { paymentsRows: undefined, grn: null };
-  }, [page, historic.rows, mapping, icseRules, grn]);
+    return { paymentsRows: undefined, loadPaymentsRows, grn: null as GrnSource | null, loadGrn };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [page, historic.rows, historic.selectedYear, mapping, icseRules, grn]);
 
   const source = useMemo(
     () =>
@@ -209,6 +246,7 @@ export default function AskAiWidget({ page }: { page: string }) {
         pageTitle: pageTitle[page] ?? page,
         historicRows: page === "historic-report" ? historic.rows ?? [] : undefined,
         year: historic.selectedYear,
+        yearsAvailable: [...ALL_SESSION_YEARS],
         zoneByBranch:
           page === "historic-report"
             ? new Map(mapping.filter((r) => r.zone).map((r) => [r.branchEduvate, r.zone]))
@@ -304,7 +342,7 @@ export default function AskAiWidget({ page }: { page: string }) {
         display = [...history, { role: "assistant", content: `[called ${calls.map((c) => c.tool).join(", ")}]` }];
         setMessages(display);
         for (const c of calls) {
-          const result = executeAiTool(c.tool, c.args, toolCtx);
+          const result = await executeAiTool(c.tool, c.args, toolCtx);
           toolResults.push({ tool: c.tool, args: c.args, result, toolCallId: c.toolCallId ?? null });
           trace.push({ kind: "tool", tool: c.tool, args: c.args, result });
         }
@@ -333,10 +371,12 @@ export default function AskAiWidget({ page }: { page: string }) {
 
   const suggestions =
     page === "historic-report"
-      ? ["What are the total payments for Bangalore branch zone in January?", "Which 5 branches have the most students?", "How many ICSE students paid in March 2026?"]
+      ? ["What are the total payments for Bangalore branch zone in January?", "Which 5 branches have the most students?", "How many students paid across ALL academic years?", "How many ICSE students paid in March 2026?"]
       : page === "pending-grn" && grn
         ? ["Which vendor has the most pending GRNs?", "Show a summary by status column", "What is the average value by branch?"]
-        : null;
+        : page === "pending-grn"
+          ? ["Analyze the last saved GRN file", "How many students paid across ALL academic years?"]
+          : ["How many students paid in each academic year?", "Which zone has the most payments overall?", "How many ICSE students paid in 2024-25?"];
 
   return (
     <>
@@ -362,7 +402,7 @@ export default function AskAiWidget({ page }: { page: string }) {
                 {pageTitle[page] ?? page}
                 {source.kind === "payments" && ` · ${source.rowCount.toLocaleString("en-IN")} rows · ${source.year}`}
                 {source.kind === "grn_file" && ` · ${grn?.fileName ?? source.fileName} · ${source.rowCount.toLocaleString("en-IN")} rows`}
-                {source.kind === "none" && " · no data on this page"}
+                {source.kind === "none" && " · whole-database queries available"}
               </div>
             </div>
             <div className="askai-head-actions">
@@ -397,7 +437,11 @@ export default function AskAiWidget({ page }: { page: string }) {
             {messages.length === 0 && (
               <div className="askai-empty">
                 {source.kind === "none" ? (
-                  <p>This page has no data to analyse. Ask AI works on the Historic Report (payment data) and the Pending GRN Report (after you upload a file).</p>
+                  <p>
+                    This page has no data of its own, but Ask AI can query the whole database —
+                    payment reports for every academic year — and analyse the last saved
+                    Pending GRN file. For example:
+                  </p>
                 ) : (
                   <>
                     <p>Ask anything about the data on this page — the AI will look up what it needs, e.g.:</p>
@@ -436,12 +480,12 @@ export default function AskAiWidget({ page }: { page: string }) {
           <div className="askai-inputrow">
             <input
               value={input}
-              placeholder={source.kind === "none" ? "No data on this page…" : "Ask about this page's data…"}
+              placeholder={source.kind === "none" ? "Ask about the whole database…" : "Ask about this page's data…"}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && void send()}
-              disabled={busy || source.kind === "none"}
+              disabled={busy}
             />
-            <button className="askai-send" onClick={() => void send()} disabled={busy || !input.trim() || source.kind === "none"}>
+            <button className="askai-send" onClick={() => void send()} disabled={busy || !input.trim()}>
               Send
             </button>
           </div>

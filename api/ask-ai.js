@@ -97,7 +97,7 @@ const QUERY_PAYMENTS_SCHEMA = {
   function: {
     name: "query_payments",
     description:
-      "Filter, count and group the payment rows (source.kind = 'payments'). One row = one student's FIRST payment, so a count = number of payment records. Copy zone/branch/grade names EXACTLY from the data source. Omit groupBy for a single total; use groupBy 'month' for month-wise counts (first_paid_date, yyyy-mm).",
+      "Filter, count and group the payment rows (one row = one student's FIRST payment, so a count = number of payment records). Works on the CURRENT page's year by default — but the WHOLE database is reachable from ANY page: pass allYears:true for every academic year, or sessionYears:[\"2024-25\"] for specific ones (other years load automatically). Copy zone/branch/grade names EXACTLY from the data source. Omit groupBy for a single total; use groupBy 'month' for month-wise counts (first_paid_date, yyyy-mm) or 'session_year' to compare academic years.",
     parameters: {
       type: "object",
       properties: {
@@ -106,11 +106,17 @@ const QUERY_PAYMENTS_SCHEMA = {
         grades: { type: "array", items: { type: "string" }, description: 'e.g. ["Grade 6"] or ["K1"]' },
         studentTypes: { type: "array", items: { type: "string", enum: ["New", "Old"] } },
         segments: { type: "array", items: { type: "string", enum: ["ICSE", "OIS"] } },
+        sessionYears: {
+          type: "array",
+          items: { type: "string" },
+          description: 'Academic years to include, e.g. ["2025-26", "2024-25"]. Omit = current page\'s year only.',
+        },
+        allYears: { type: "boolean", description: "true = query EVERY academic year in the database (2026-27, 2025-26, 2024-25)." },
         dateFrom: { type: "string", description: "inclusive yyyy-mm-dd" },
         dateTo: { type: "string", description: "inclusive yyyy-mm-dd" },
         groupBy: {
           type: "string",
-          enum: ["zone", "branch", "grade", "student_type", "segment", "month"],
+          enum: ["zone", "branch", "grade", "student_type", "segment", "month", "session_year"],
           description: "omit for a single total",
         },
         withMonths: { type: "boolean", description: "include per-group month breakdown (default true)" },
@@ -125,7 +131,7 @@ const ANALYZE_GRN_SCHEMA = {
   function: {
     name: "analyze_grn",
     description:
-      "Analyze the uploaded Pending-GRN file (source.kind = 'grn_file'). Column names must match source.columns EXACTLY. With no groupBy and no aggregate, returns the first matching rows (capped) so you can read examples.",
+      "Analyze the uploaded Pending-GRN file (source.kind = 'grn_file'). The LAST uploaded file is also saved in the database, so this tool works from ANY page — the saved snapshot is fetched automatically. Column names must match source.columns EXACTLY (on other pages, ask the tool and it returns the saved file's columns). With no groupBy and no aggregate, returns the first matching rows (capped) so you can read examples.",
     parameters: {
       type: "object",
       properties: {
@@ -190,9 +196,11 @@ function buildSystemPrompt(source, today, toolRoundsUsed) {
     "",
     'You are an AGENT: understand what the user is really asking (rephrase vague wording internally, e.g. "Bangalore in January" → zone Bangalore, January of the report\'s year), call the tools silently to fetch exactly the data you need, then give the final answer.',
     "",
+    "WHOLE-DATABASE ACCESS: the payment database contains EVERY academic year (2026-27, 2025-26, 2024-25) and query_payments spans all of them from ANY page — set allYears:true or sessionYears:[…]. Cross-year or whole-database questions MUST use those arguments, not just the year shown on the page. Likewise analyze_grn works everywhere: the last uploaded Pending-GRN file is saved in the database and fetched automatically.",
+    "",
     "RULES:",
     "1. Get every figure from a tool result (or the source descriptor itself). NEVER state a number you have not fetched. NEVER narrate or describe tool calls in prose — just call them; the user sees only your final answer.",
-    '2. If the source kind is "none", do NOT call tools — politely answer that this page has no data to analyse and mention which pages do (Historic Report — payment data; Pending GRN — after a file is uploaded).',
+    '2. You can ALWAYS call tools — even when source.kind is "none" (a page without its own data), the whole-database query_payments still answers payment questions across every academic year. Only say you lack data after a tool result comes back empty.',
     `3. Tool budget: at most ${MAX_TOOL_ROUNDS} tool calls in total` + (toolRoundsUsed > 0 ? ` (already used: ${toolRoundsUsed})` : "") + ". Once you have enough data (or the budget is spent), answer.",
     '4. FINAL ANSWER — plain prose, NOT JSON, no tool talk: direct answer first (e.g. "Total payments for Bangalore in January is 2,841."), numbers with Indian digit grouping (1,23,456), then at most 4 short supporting bullets. Mention the filters you applied when relevant.',
     "5. If the data cannot answer the question (e.g. a field the source doesn't have), say so briefly and suggest what would help.",

@@ -40,7 +40,7 @@ const TABLES = {
         "text (NOT a real date column), format 'yyyy-mm-dd' (occasionally 'yyyy-mm-dd HH:mm:ss'). Comparisons in the tool are lexicographic and inclusive: dateFrom <= value <= dateTo. Empty string '' = never paid / no date.",
       fetched_at: "timestamptz. When this row snapshot was pulled from Eduvate — metadata, never filter on it.",
       session_year:
-        "text. Academic session, e.g. '2026-27'. One row per student per session year. The widget already scopes to the year selected in the header dropdown (source.year) — do NOT add a session_year filter.",
+        "text. Academic session — exactly one of '2026-27', '2025-26', '2024-25'. One row per student per session year. The page shows ONE year (source.year) by default; for cross-year or whole-database questions pass sessionYears:[\"2025-26\"] or allYears:true to query_payments, or groupBy 'session_year' to compare years.",
     },
   },
 
@@ -99,6 +99,7 @@ const DERIVED_FIELDS = {
 // ---------------------------------------------------------------------------
 
 const VALUE_DOMAINS = {
+  sessionYears: "Exactly '2026-27' (current), '2025-26', '2024-25'. allYears:true means all three.",
   zones: "Copy from source.zones (derived from the branch→zone mapping), e.g. 'Bangalore', 'Kolkata'.",
   branches: "Copy EXACTLY from source.zoneByBranch keys, e.g. 'OIS New Town Kolkata'.",
   grades: "Exact ERP spelling: 'K1', 'K2', 'Grade 1' … 'Grade 12'. Never '6th'/'Class 6'/'VI'.",
@@ -116,9 +117,9 @@ export const SCHEMA_KNOWLEDGE = {
   derivedFields: DERIVED_FIELDS,
   valueDomains: VALUE_DOMAINS,
   grnNote:
-    "When source.kind = 'grn_file', the payments table does not apply — every filter/group/aggregate column must come from source.columns (header names of the uploaded file).",
+    "When source.kind = 'grn_file', the payments table does not apply — every filter/group/aggregate column must come from source.columns (header names of the uploaded file). The last uploaded GRN file is saved in the database, so analyze_grn also works from other pages.",
   noneNote:
-    "When source.kind = 'none', there is no data — produce clarification instead of a tool call.",
+    "When source.kind = 'none' the page has no data of its own — but the DATABASE is still fully available: query_payments (all academic years) and analyze_grn (last saved GRN) both work. Never answer that there is no data without calling a tool first.",
 };
 
 // ---------------------------------------------------------------------------
@@ -169,9 +170,10 @@ export function buildInterpreterPrompt(source, today) {
     "2. Correct typos and normalize wording BEFORE mapping: 'Bangaloer' → Bangalore, 'jan'/'Jan' → exact month bounds of the report year, '6th' → 'Grade 6', 'new students' → studentTypes ['New'].",
     "3. Resolve relative dates against TODAY (" + today + ") and the report year (source.year for payments): 'this month', 'last month', 'jan', 'last 3 months' → exact inclusive yyyy-mm-dd dateFrom/dateTo.",
     "4. Map the intent to EXACT value domains (grades = 'Grade 6' not '6th'; zones/branches copied verbatim from the source descriptor; segments only 'ICSE'/'OIS'; studentTypes only 'New'/'Old').",
-    "5. Choose the tool from the page kind: payments → query_payments, grn_file → analyze_grn. Fill args fully and explicitly (include groupBy when the user asks per-group/per-branch/per-month breakdowns; omit it for a single total; prefer groupBy 'month' for time trends).",
+    "5. Choose the tool from the page kind: payments → query_payments, grn_file → analyze_grn. Fill args fully and explicitly (include groupBy when the user asks per-group/per-branch/per-month breakdowns; omit it for a single total; prefer groupBy 'month' for time trends, 'session_year' to compare academic years).",
+    "5b. If the question spans academic years or the whole database ('across all years', 'since 2024', 'total overall'), set sessionYears or allYears:true on query_payments — the page's year alone would under-report. This works from ANY page.",
     "6. If the request is genuinely ambiguous AFTER normalization (e.g. 'Bangalore' could be zone or branch — it is the zone), pick the most natural reading and record it in assumptions instead of asking. Only ask when you truly cannot proceed (needsClarification + clarification).",
-    "7. If source.kind = 'none', set needsClarification and explain there is no data on this page.",
+    "7. If source.kind = 'none' the page still has whole-database access — only set needsClarification when the request itself is unanswerable (e.g. asking about a table that does not exist).",
     "",
     "=== OUTPUT (STRICT) ===",
     "Reply with ONE JSON object and nothing else (no markdown fences, no prose):",
