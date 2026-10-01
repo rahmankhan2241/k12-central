@@ -36,6 +36,13 @@ const NAV_SECTIONS: { label: string; items: NavItem[] }[] = [
         icon: <ClockIcon />,
         keywords: ["historic", "history", "tpnd", "store", "kit", "student", "paid", "installment"],
       },
+      {
+        id: "po-tracking",
+        label: "PO Tracking",
+        icon: <FileReportIcon />,
+        badge: "New",
+        keywords: ["po", "purchase", "order", "sku", "material", "stock", "qty", "tracking"],
+      },
     ],
   },
   {

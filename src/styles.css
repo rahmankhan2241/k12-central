@@ -1869,6 +1869,125 @@ button.sync-pill.failed:hover {
   margin-bottom: 14px;
 }
 
+/* ---- PO Tracking ---- */
+.po-upload-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 14px;
+}
+.po-upload-info {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  min-width: 0;
+}
+.po-upload-icon {
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
+  background: var(--blue-50);
+  color: var(--navy-700);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+}
+.po-upload-title {
+  font-weight: 700;
+  font-size: 13.5px;
+}
+.po-upload-sub {
+  font-size: 12px;
+  color: var(--ink-soft);
+}
+.po-warn-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 14px;
+}
+.po-confirm-code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 22px;
+  font-weight: 800;
+  letter-spacing: 6px;
+  background: var(--blue-50);
+  border: 1px dashed var(--navy-600);
+  color: var(--navy-700);
+  border-radius: 8px;
+  text-align: center;
+  padding: 10px 12px;
+  margin: 10px 0;
+  user-select: all;
+}
+.po-code-input {
+  width: 100%;
+  font-size: 15px;
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  text-transform: uppercase;
+  letter-spacing: 3px;
+}
+.po-category-select {
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--surface);
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ink);
+  padding: 8px 12px;
+}
+.po-cell-input {
+  width: 100%;
+  min-width: 70px;
+  font-size: 12.5px;
+  padding: 4px 6px;
+  border: 1px solid var(--navy-600);
+  border-radius: 5px;
+}
+.po-row-btn {
+  padding: 5px 9px;
+  font-size: 12px;
+}
+.po-editing td {
+  background: var(--blue-50);
+}
+.po-edit-diff {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 10px;
+  font-size: 12.5px;
+}
+.po-edit-diff th {
+  text-align: left;
+  background: var(--blue-50);
+  padding: 6px 9px;
+  border: 1px solid var(--line);
+}
+.po-edit-diff td {
+  padding: 6px 9px;
+  border: 1px solid var(--line);
+}
+.po-edit-diff .po-diff-new {
+  font-weight: 700;
+  color: var(--navy-700);
+}
+.data-table tfoot td {
+  background: var(--navy-700);
+  color: #fff;
+  font-weight: 700;
+  border-top: 2px solid var(--navy-600);
+  font-size: 13.5px;
+}
+.data-table td.num,
+.data-table th.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
 /* ---- View format switch: ERP Wise vs Paid Data ---- */
 .view-switch {
   display: inline-flex;

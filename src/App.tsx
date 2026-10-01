@@ -4,6 +4,7 @@ import Sidebar from "./components/Sidebar";
 import HomePage from "./pages/HomePage";
 import PendingGrnPage from "./pages/PendingGrnPage";
 import HistoricReportPage from "./pages/HistoricReportPage";
+import PoPage from "./pages/PoPage";
 import SettingsPage from "./pages/SettingsPage";
 import PlaceholderPage from "./pages/PlaceholderPage";
 import { HistoricProvider, useHistoricGlobal } from "./useHistoricFetch";
@@ -91,10 +92,12 @@ function Shell() {
               <PendingGrnPage />
             )}
             {activePage === "historic-report" && <HistoricReportPage />}
+            {activePage === "po-tracking" && <PoPage />}
             {activePage === "settings" && <SettingsPage />}
             {activePage !== "home" &&
               activePage !== "pending-grn" &&
               activePage !== "historic-report" &&
+              activePage !== "po-tracking" &&
               activePage !== "settings" && (
                 <PlaceholderPage title={PAGE_TITLES[activePage] ?? activePage} />
               )}
