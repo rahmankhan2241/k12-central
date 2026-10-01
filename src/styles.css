@@ -2301,6 +2301,68 @@ button.sync-pill.failed:hover {
   max-width: min(78%, 760px);
 }
 
+/* Zoomed modes read larger: every text size scales ~25% in stretch and
+   full screen so the bigger panel is genuinely easier to read. */
+.askai-panel.askai-stretch .askai-msg,
+.askai-panel.askai-full .askai-msg {
+  font-size: 16.5px;
+  line-height: 1.55;
+}
+
+.askai-panel.askai-stretch .askai-empty p,
+.askai-panel.askai-full .askai-empty p {
+  font-size: 15.5px;
+}
+
+.askai-panel.askai-stretch .askai-chip,
+.askai-panel.askai-full .askai-chip {
+  font-size: 15.5px;
+  padding: 10px 13px;
+}
+
+.askai-panel.askai-stretch .askai-inputrow input,
+.askai-panel.askai-full .askai-inputrow input {
+  font-size: 16px;
+  padding: 11px 14px;
+}
+
+.askai-panel.askai-stretch .askai-send,
+.askai-panel.askai-full .askai-send {
+  font-size: 15.5px;
+  padding: 11px 20px;
+}
+
+.askai-panel.askai-stretch .askai-err,
+.askai-panel.askai-full .askai-err {
+  font-size: 15.5px;
+}
+
+.askai-panel.askai-stretch .askai-title,
+.askai-panel.askai-full .askai-title {
+  font-size: 16px;
+}
+
+.askai-panel.askai-stretch .askai-sub,
+.askai-panel.askai-full .askai-sub {
+  font-size: 12.5px;
+}
+
+.askai-panel.askai-stretch .askai-trace-toggle,
+.askai-panel.askai-full .askai-trace-toggle {
+  font-size: 13.5px;
+}
+
+.askai-panel.askai-stretch .askai-trace,
+.askai-panel.askai-full .askai-trace {
+  font-size: 13.5px;
+}
+
+.askai-panel.askai-stretch .askai-trace pre,
+.askai-panel.askai-full .askai-trace pre {
+  font-size: 12.5px;
+  max-height: 260px;
+}
+
 .askai-list {
   flex: 1;
   overflow-y: auto;
@@ -2338,10 +2400,10 @@ button.sync-pill.failed:hover {
 
 .askai-msg {
   max-width: 88%;
-  padding: 9px 12px;
+  padding: 10px 13px;
   border-radius: 12px;
-  font-size: 13px;
-  line-height: 1.5;
+  font-size: 14px;
+  line-height: 1.55;
   white-space: pre-wrap;
   word-break: break-word;
 }
