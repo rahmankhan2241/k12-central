@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { useBranchZbhMapping } from "../useBranchZbhMapping";
 import { useIcseConfig } from "../useIcseConfig";
 import { useHistoricGlobal } from "../useHistoricFetch";
@@ -25,6 +25,9 @@ import {
 } from "../icons";
 
 type TabId = "payment" | "admission";
+
+/** Data view on the Payment tab: ERP-wise rows or the paid-data pivot dashboard. */
+type ViewFormat = "erp" | "paid";
 
 // 2027-28 is listed but disabled — the session hasn't started at Eduvate yet.
 const ACADEMIC_YEARS: string[] = ["2026-27", "2025-26", "2024-25", "2027-28"];
@@ -173,6 +176,7 @@ function timeAgo(iso: string | null | undefined): string {
 
 export default function HistoricReportPage() {
   const [tab, setTab] = useState<TabId>("payment");
+  const [viewFormat, setViewFormat] = useState<ViewFormat>("erp");
   const {
     logs,
     logsLoading,
@@ -355,6 +359,56 @@ export default function HistoricReportPage() {
     zoneFilter.length > 0 ||
     dateSel.months.length > 0 ||
     dateSel.dates.length > 0;
+
+  // ---- Paid Data Format: pivot of the SAME filtered rows the ERP table shows.
+  // One row per branch: Paid Students (all ERPs), New Paid, Existing (Old) Paid.
+  const paidPivot = useMemo(() => {
+    const zones = new Map<
+      string,
+      Map<string, { paid: number; newPaid: number; oldPaid: number }>
+    >();
+    for (const r of filtered) {
+      const zone = r.zone || "(No zone)";
+      let byBranch = zones.get(zone);
+      if (!byBranch) {
+        byBranch = new Map();
+        zones.set(zone, byBranch);
+      }
+      const cell = byBranch.get(r.branch) ?? { paid: 0, newPaid: 0, oldPaid: 0 };
+      cell.paid += 1;
+      if (r.student_type === "New") cell.newPaid += 1;
+      else cell.oldPaid += 1;
+      byBranch.set(r.branch, cell);
+    }
+    const zoneRows = [...zones.entries()]
+      .map(([zone, byBranch]) => {
+        const branches = [...byBranch.entries()]
+          .map(([b, c]) => ({ branch: b, ...c }))
+          .sort((a, b) => b.paid - a.paid || a.branch.localeCompare(b.branch));
+        const sub = branches.reduce(
+          (acc, b) => ({
+            paid: acc.paid + b.paid,
+            newPaid: acc.newPaid + b.newPaid,
+            oldPaid: acc.oldPaid + b.oldPaid,
+          }),
+          { paid: 0, newPaid: 0, oldPaid: 0 }
+        );
+        return { zone, branches, sub };
+      })
+      .sort((a, b) => b.sub.paid - a.sub.paid || a.zone.localeCompare(b.zone));
+    const total = zoneRows.reduce(
+      (acc, z) => ({
+        paid: acc.paid + z.sub.paid,
+        newPaid: acc.newPaid + z.sub.newPaid,
+        oldPaid: acc.oldPaid + z.sub.oldPaid,
+      }),
+      { paid: 0, newPaid: 0, oldPaid: 0 }
+    );
+    return { zoneRows, total };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filtered, filtered.length]);
+
+  const fmt = (n: number) => n.toLocaleString("en-IN");
 
   const joinList = (sel: string[]) => (sel.length <= 3 ? sel.join(", ") : `${sel.length} selected`);
   const dateFilterSummary = (() => {
@@ -642,6 +696,27 @@ export default function HistoricReportPage() {
               />
             </div>
             <div className="historic-toolbar-right">
+              {/* View format: ERP-wise rows vs Paid-data pivot dashboard */}
+              <div className="view-switch" role="tablist" aria-label="Data view format">
+                <button
+                  role="tab"
+                  aria-selected={viewFormat === "erp"}
+                  className={`view-switch-btn ${viewFormat === "erp" ? "active" : ""}`}
+                  onClick={() => setViewFormat("erp")}
+                  title="Flat student rows — one row per ERP (current view)"
+                >
+                  ERP Wise Format
+                </button>
+                <button
+                  role="tab"
+                  aria-selected={viewFormat === "paid"}
+                  className={`view-switch-btn ${viewFormat === "paid" ? "active" : ""}`}
+                  onClick={() => setViewFormat("paid")}
+                  title="Pivot dashboard — Zone | Branch | Paid | New | Existing"
+                >
+                  Paid Data Format
+                </button>
+              </div>
               <span className="row-count">
                 {busy
                   ? "Loading…"
@@ -748,7 +823,112 @@ export default function HistoricReportPage() {
             </div>
           )}
 
-          {/* Data table */}
+          {/* ================= Paid Data Format — pivot dashboard ================= */}
+          {viewFormat === "paid" ? (
+            <>
+              {!busy && (
+                <div className="paid-kpis">
+                  <div className="paid-kpi">
+                    <span className="paid-kpi-value">{fmt(paidPivot.total.paid)}</span>
+                    <span className="paid-kpi-label">Paid Students</span>
+                  </div>
+                  <div className="paid-kpi">
+                    <span className="paid-kpi-value">{fmt(paidPivot.total.newPaid)}</span>
+                    <span className="paid-kpi-label">New Paid</span>
+                  </div>
+                  <div className="paid-kpi">
+                    <span className="paid-kpi-value">{fmt(paidPivot.total.oldPaid)}</span>
+                    <span className="paid-kpi-label">Existing Paid</span>
+                  </div>
+                  <div className="paid-kpi">
+                    <span className="paid-kpi-value">{fmt(paidPivot.zoneRows.length)}</span>
+                    <span className="paid-kpi-label">Zones</span>
+                  </div>
+                  <div className="paid-kpi">
+                    <span className="paid-kpi-value">
+                      {fmt(paidPivot.zoneRows.reduce((n, z) => n + z.branches.length, 0))}
+                    </span>
+                    <span className="paid-kpi-label">Branches</span>
+                  </div>
+                </div>
+              )}
+              <div className="table-wrap historic-table">
+                <table className="data-table paid-pivot">
+                  <thead>
+                    <tr>
+                      <th style={{ width: 44 }}>#</th>
+                      <th>Zone</th>
+                      <th>Branch</th>
+                      <th className="num">Paid Students</th>
+                      <th className="num">New Paid</th>
+                      <th className="num">Existing Paid</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {!busy &&
+                      paidPivot.zoneRows.map((z) => (
+                        <Fragment key={z.zone}>
+                          {z.branches.map((b, bi) => (
+                            <tr key={b.branch}>
+                              <td className="mapping-idx">
+                                {bi === 0 ? <span className="paid-zone-first">{bi + 1}</span> : null}
+                              </td>
+                              <td className="paid-zone-cell">
+                                {bi === 0 ? (
+                                  <span className="paid-zone-name" title={z.zone}>
+                                    {z.zone}
+                                  </span>
+                                ) : null}
+                              </td>
+                              <td>{b.branch}</td>
+                              <td className="num paid-strong">{fmt(b.paid)}</td>
+                              <td className="num">
+                                <span className="stype-chip new">{fmt(b.newPaid)}</span>
+                              </td>
+                              <td className="num">
+                                <span className="stype-chip old">{fmt(b.oldPaid)}</span>
+                              </td>
+                            </tr>
+                          ))}
+                          <tr className="paid-subtotal">
+                            <td colSpan={2} />
+                            <td>{z.zone} — Total</td>
+                            <td className="num paid-strong">{fmt(z.sub.paid)}</td>
+                            <td className="num">{fmt(z.sub.newPaid)}</td>
+                            <td className="num">{fmt(z.sub.oldPaid)}</td>
+                          </tr>
+                        </Fragment>
+                      ))}
+                    {!busy && paidPivot.zoneRows.length === 0 && (
+                      <tr>
+                        <td colSpan={6} className="table-empty">
+                          No students found — adjust the filters or fetch the report.
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                  {!busy && paidPivot.zoneRows.length > 0 && (
+                    <tfoot>
+                      <tr>
+                        <td colSpan={2} />
+                        <td>Grand Total</td>
+                        <td className="num paid-strong">{fmt(paidPivot.total.paid)}</td>
+                        <td className="num">{fmt(paidPivot.total.newPaid)}</td>
+                        <td className="num">{fmt(paidPivot.total.oldPaid)}</td>
+                      </tr>
+                    </tfoot>
+                  )}
+                </table>
+              </div>
+              {!busy && (
+                <div className="historic-footnote">
+                  Pivot of the {filtered.length.toLocaleString("en-IN")} students matching your
+                  filters · one row = one ERP first payment · counts students per branch.
+                </div>
+              )}
+            </>
+          ) : (
+          /* ================= ERP Wise Format — the existing flat table ================= */
           <div className="table-wrap historic-table">
             <table className="data-table">
               <thead>
@@ -800,6 +980,7 @@ export default function HistoricReportPage() {
               </div>
             )}
           </div>
+          )}
 
           <div className="historic-footnote">
             <ClockIcon size={13} />

@@ -1869,6 +1869,101 @@ button.sync-pill.failed:hover {
   margin-bottom: 14px;
 }
 
+/* ---- View format switch: ERP Wise vs Paid Data ---- */
+.view-switch {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--surface);
+  padding: 3px;
+  gap: 3px;
+}
+.view-switch-btn {
+  border: none;
+  background: transparent;
+  color: var(--ink-soft);
+  font-size: 12.5px;
+  font-weight: 600;
+  padding: 6px 12px;
+  border-radius: 7px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background .12s, color .12s;
+}
+.view-switch-btn:hover {
+  color: var(--ink);
+}
+.view-switch-btn.active {
+  background: var(--navy-700);
+  color: #fff;
+}
+
+/* ---- Paid Data Format: KPI cards ---- */
+.paid-kpis {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px;
+  margin-bottom: 14px;
+}
+.paid-kpi {
+  background: var(--navy-700);
+  color: #fff;
+  border-radius: 12px;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  box-shadow: 0 2px 8px rgba(23, 42, 63, 0.18);
+}
+.paid-kpi-value {
+  font-size: 24px;
+  font-weight: 800;
+  letter-spacing: -0.3px;
+}
+.paid-kpi-label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  color: #a8c0dd;
+}
+
+/* ---- Paid Data Format: pivot table ---- */
+.paid-pivot td.num,
+.paid-pivot th.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.paid-pivot .paid-strong {
+  font-weight: 700;
+  color: var(--navy-700);
+}
+.paid-pivot .paid-zone-cell {
+  vertical-align: top;
+}
+.paid-pivot .paid-zone-name {
+  font-weight: 700;
+  color: var(--ink);
+  position: sticky;
+  top: auto;
+}
+.paid-pivot .paid-subtotal td {
+  background: var(--blue-50);
+  font-weight: 700;
+  border-top: 2px solid var(--navy-600);
+  font-size: 13px;
+}
+.paid-pivot tfoot td {
+  background: var(--navy-700);
+  color: #fff;
+  font-weight: 700;
+  border-top: 2px solid var(--navy-600);
+  font-size: 13.5px;
+}
+.paid-pivot tfoot .paid-strong {
+  color: #fff;
+}
+
 .historic-tab {
   border: 1px solid var(--border);
   background: var(--surface);
