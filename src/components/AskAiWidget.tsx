@@ -171,6 +171,9 @@ export default function AskAiWidget({ page }: { page: string }) {
   const [busyNote, setBusyNote] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [view, setView] = useState<View>("normal");
+  // Pending clarification: the interpreter asked the user back with candidate
+  // answers — render them as clickable chips until the user replies.
+  const [clarify, setClarify] = useState<{ options: string[] } | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
   const historic = useHistoricGlobal();
@@ -277,6 +280,7 @@ export default function AskAiWidget({ page }: { page: string }) {
   const send = async (rawText?: string) => {
     const text = (rawText ?? input).trim();
     if (!text || busy) return;
+    setClarify(null); // answering (chip or typed) clears the pending question
     const withUser: Msg[] = [...messages, { role: "user", content: text }];
     setMessages(withUser);
     setInput("");
@@ -307,6 +311,24 @@ export default function AskAiWidget({ page }: { page: string }) {
         const body = await res.json().catch(() => ({}));
         if (!res.ok || body.ok === false) {
           throw new Error(body.error || `Ask AI failed (${res.status})`);
+        }
+        // The interpreter asked the user back (e.g. "which year's payments?")
+        // with clickable candidate answers — show the question + chips and stop.
+        if (body.type === "clarification") {
+          const opts: string[] = Array.isArray(body.options) ? body.options.map(String) : [];
+          setMessages([
+            ...history,
+            {
+              role: "assistant",
+              content: String(body.question ?? "Could you clarify your request?"),
+              trace:
+                body.understanding
+                  ? [{ kind: "interpret", understanding: String(body.understanding), assumptions: [], tool: null, args: {} }]
+                  : undefined,
+            },
+          ]);
+          setClarify({ options: opts });
+          return;
         }
         if (body.type === "answer") {
           setMessages([
@@ -474,6 +496,19 @@ export default function AskAiWidget({ page }: { page: string }) {
                 </Fragment>
               );
             })}
+            {/* Clarification follow-up: clickable candidate answers + free text below. */}
+            {clarify && !busy && clarify.options.length > 0 && (
+              <div className="askai-clarify">
+                <div className="askai-clarify-hint">Pick one — or type your own answer below:</div>
+                <div className="askai-clarify-chips">
+                  {clarify.options.map((o) => (
+                    <button key={o} className="askai-chip askai-clarify-chip" onClick={() => void send(o)}>
+                      {o}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
             {busy && <div className="askai-msg assistant askai-thinking">{busyNote || "Thinking…"}</div>}
             {error && <div className="askai-err">{error}</div>}
           </div>
@@ -481,7 +516,13 @@ export default function AskAiWidget({ page }: { page: string }) {
           <div className="askai-inputrow">
             <input
               value={input}
-              placeholder={source.kind === "none" ? "Ask about the whole database…" : "Ask about this page's data…"}
+              placeholder={
+                clarify
+                  ? "Type your own answer…"
+                  : source.kind === "none"
+                    ? "Ask about the whole database…"
+                    : "Ask about this page's data…"
+              }
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && void send()}
               disabled={busy}

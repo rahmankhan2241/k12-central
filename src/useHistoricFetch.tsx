@@ -268,7 +268,10 @@ export function HistoricProvider({ children }: { children: ReactNode }) {
   const loadYear = useCallback(
     async (year: string) => {
       if (!rowsByYearRef.current[year]) await loadAllRows(year);
-      return rowsByYearRef.current[year] ?? [];
+      // The ref only updates on the next render, which may not have happened
+      // yet right after the await — fall back to the module memory cache,
+      // which loadAllRows populates synchronously before it resolves.
+      return rowsByYearRef.current[year] ?? memoryCache.get(year)?.rows ?? [];
     },
     [loadAllRows]
   );

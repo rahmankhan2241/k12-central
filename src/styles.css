@@ -2398,6 +2398,31 @@ button.sync-pill.failed:hover {
   background: var(--blue-50);
 }
 
+/* Clarification follow-up: clickable candidate answers from the interpreter. */
+.askai-clarify {
+  margin: 4px 0 10px;
+}
+.askai-clarify-hint {
+  font-size: 12px;
+  color: var(--ink-soft);
+  margin-bottom: 7px;
+}
+.askai-clarify-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+.askai-clarify-chip {
+  display: inline-block;
+  width: auto;
+  margin-bottom: 0;
+}
+.askai-panel.askai-stretch .askai-clarify-chip,
+.askai-panel.askai-full .askai-clarify-chip {
+  font-size: 15.5px;
+  padding: 10px 13px;
+}
+
 .askai-msg {
   max-width: 88%;
   padding: 10px 13px;

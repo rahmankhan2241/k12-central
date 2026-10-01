@@ -491,13 +491,42 @@ export default async function handler(req, res) {
     // Structured copy of the same interpretation, returned to the widget so the
     // user can inspect the full pipeline (what the middle agent told the model).
     let interpObj = null;
+    let interpModel = null;
     if (toolResults.length === 0 && !priorInterp && lastMsg?.role === "user") {
       const startedAt = Date.now();
       const out = await runInterpreter({ source, userText: lastMsg.content, history: messages, startedAt });
       if (out) {
         interpNote = interpretationMessage(out.interp);
         interpObj = out.interp;
+        interpModel = out.model;
       }
+    }
+
+    // --- Clarification short-circuit: the interpreter asked the user back ---
+    // --- like a data analyst, with clickable candidate answers.           ---
+    if (
+      interpObj &&
+      interpObj.needsClarification === true &&
+      typeof interpObj.clarification === "string" &&
+      interpObj.clarification.trim()
+    ) {
+      const options = Array.isArray(interpObj.clarificationOptions)
+        ? interpObj.clarificationOptions
+            .filter((o) => typeof o === "string" && o.trim())
+            .map((o) => o.trim())
+            .slice(0, 6)
+        : [];
+      res.writeHead(200, { ...cors, "Content-Type": "application/json" });
+      return res.end(
+        JSON.stringify({
+          ok: true,
+          type: "clarification",
+          question: interpObj.clarification.trim(),
+          options,
+          understanding: String(interpObj.understanding ?? ""),
+          model: interpModel,
+        })
+      );
     }
 
     const nimMessages = [...messages];

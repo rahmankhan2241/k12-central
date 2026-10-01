@@ -105,7 +105,10 @@ const VALUE_DOMAINS = {
   grades: "Exact ERP spelling: 'K1', 'K2', 'Grade 1' … 'Grade 12'. Never '6th'/'Class 6'/'VI'.",
   studentTypes: "Exactly 'New' or 'Old'.",
   segments: "Exactly 'ICSE' or 'OIS'.",
-  dates: "Inclusive 'yyyy-mm-dd'. 'January' alone means Jan 1–31 of the report year (source.year).",
+  dates:
+    "Inclusive 'yyyy-mm-dd'. 'January' alone means Jan 1–31, but WHICH academic year is a key dimension: when the year is not stated in the question, do not silently assume source.year — ask (see step 6) with session-year options.",
+  sessionYearClarify:
+    "When a question about payments does not name an academic year, the natural clarifying question is which year's payments are meant, with options like '2026-27', '2025-26', '2024-25' and 'All years'.",
 };
 
 // ---------------------------------------------------------------------------
@@ -145,7 +148,13 @@ export const INTERPRETATION_SCHEMA = {
     },
     args: { type: "object", description: "Exact arguments for the chosen tool — returned to the main agent." },
     needsClarification: { type: "boolean" },
-    clarification: { type: "string", description: "Question for the user when needsClarification is true." },
+    clarification: { type: "string", description: "Short natural question for the user when needsClarification is true (e.g. \"Ok — but which year's payments are you asking for?\")." },
+    clarificationOptions: {
+      type: "array",
+      items: { type: "string" },
+      description:
+        "When needsClarification is true: 2-5 SHORT candidate answers the user can click, most likely first, copied EXACTLY from the source descriptor / value domains (academic years: '2026-27', '2025-26', '2024-25', plus 'All years' when every year is plausible). Empty array when no clarification is needed.",
+    },
   },
   required: ["understanding", "tool", "args", "needsClarification"],
 };
@@ -176,8 +185,9 @@ export function buildInterpreterPrompt(source, today) {
       "    analyze_grn args: { filters?: [{column, op, value}], groupBy?: string|string[], aggregate?: {op: 'count'|'sum'|'avg'|'min'|'max', column?}, sortBy?: {by: 'count'|'value'|'group', dir: 'asc'|'desc'}, limit?: number }. Column names must match source.columns EXACTLY (copy them verbatim, e.g. 'Plant Name'); if you don't know them, pass only groupBy and read availableColumns from the error.\n" +
       "    When the user asks for a 'top N' ranking, set groupBy + sortBy {by:'count', dir:'desc'} (or 'value' for sum/avg) and limit.",
     "5b. If the question spans academic years or the whole database ('across all years', 'since 2024', 'total overall'), set sessionYears or allYears:true on query_payments — the page's year alone would under-report. This works from ANY page.",
-    "6. If the request is genuinely ambiguous AFTER normalization (e.g. 'Bangalore' could be zone or branch — it is the zone), pick the most natural reading and record it in assumptions instead of asking. Only ask when you truly cannot proceed (needsClarification + clarification).",
-    "7. If source.kind = 'none' the page still has whole-database access — only set needsClarification when the request itself is unanswerable (e.g. asking about a table that does not exist).",
+    "6. CLARIFY LIKE A DATA ANALYST: if a KEY dimension of the request is ambiguous — which academic year (e.g. 'total payments in January' names no year), zone vs branch, what metric 'top/best' means, which date range a vague phrase covers, which column of a GRN file is meant — DO NOT guess silently. Set needsClarification:true, write a short, friendly follow-up question in clarification the way a data analyst would ('Ok — but which year's payments are you asking for?'), and fill clarificationOptions with 2-5 clickable candidate answers copied EXACTLY from the source descriptor or value domains (e.g. session years ['2026-27','2025-26','2024-25','All years']; zones copied verbatim from source.zones; grades as 'Grade 6'). Most likely candidate FIRST. The user will click one and you'll reinterpret their completed request on the next turn — write clarification so their clicked answer slots straight back into the original question.\n" +
+      "    Only fall back to assumptions (no clarification) for genuinely trivial readings: a fixed typo, 'Bangalore' being the ZONE not a branch, a lone month meaning Jan 1–31. When in doubt between assuming and asking for a key dimension like the year — ASK, but keep it to ONE short question with options.",
+    "7. If source.kind = 'none' the page still has whole-database access — never ask for clarification about where the data comes from; clarify only about the question itself (year, scope, metric).",
     "",
     "=== OUTPUT (STRICT) ===",
     "Reply with ONE JSON object and nothing else (no markdown fences, no prose):",
