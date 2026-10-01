@@ -1,6 +1,9 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import remarkMath from "remark-math";
+import rehypeKatex from "rehype-katex";
+import "katex/dist/katex.min.css";
 import { useHistoricGlobal } from "../useHistoricFetch";
 import { useBranchZbhMapping } from "../useBranchZbhMapping";
 import { useIcseConfig } from "../useIcseConfig";
@@ -495,7 +498,12 @@ export default function AskAiWidget({ page }: { page: string }) {
                     {/* Assistant answers arrive as Markdown (bold figures, tables);
                         user messages render through the same pipeline — react-markdown
                         escapes raw HTML, so typed text stays literal. */}
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.content}</ReactMarkdown>
+                    <ReactMarkdown
+                      remarkPlugins={[remarkGfm, remarkMath]}
+                      rehypePlugins={[rehypeKatex]}
+                    >
+                      {m.content}
+                    </ReactMarkdown>
                   </div>
                   {m.role === "assistant" && m.trace && m.trace.length > 0 && (
                     <TraceView steps={m.trace} />
