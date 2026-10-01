@@ -1931,15 +1931,7 @@ button.sync-pill.failed:hover {
   text-transform: uppercase;
   letter-spacing: 3px;
 }
-.po-category-select {
-  border: 1px solid var(--border);
-  border-radius: 9px;
-  background: var(--surface);
-  font-size: 12.5px;
-  font-weight: 600;
-  color: var(--ink);
-  padding: 8px 12px;
-}
+
 .po-cell-input {
   width: 100%;
   min-width: 70px;

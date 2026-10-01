@@ -7,6 +7,7 @@ import {
   updatePoRow,
   type PoRow,
 } from "../poRows";
+import MultiSelect from "../components/MultiSelect";
 import {
   AlertIcon,
   CheckCircleIcon,
@@ -505,7 +506,7 @@ export default function PoPage() {
       )}
 
       {/* ------------------------------------------------ Toolbar: search + category + export */}
-      <div className="table-toolbar">
+      <div className="table-toolbar po-toolbar">
         <div className="filters" style={{ flexWrap: "wrap", gap: 8 }}>
           <div className="sidebar-search" style={{ width: 300 }}>
             <span className="search-icon">
@@ -519,20 +520,13 @@ export default function PoPage() {
               onChange={(e) => setSearch(e.target.value)}
             />
           </div>
-          <select
-            className="po-category-select"
-            value={category}
-            multiple={false}
-            onChange={(e) => setCategory(e.target.value ? [e.target.value] : [])}
-            aria-label="Filter by category"
-          >
-            <option value="">All Categories</option>
-            {categoryOptions.map((c) => (
-              <option key={c} value={c}>
-                {c}
-              </option>
-            ))}
-          </select>
+          <MultiSelect
+            label="All Categories"
+            options={categoryOptions}
+            selected={category}
+            onChange={setCategory}
+            ariaLabel="Filter by category"
+          />
         </div>
         <div className="historic-toolbar-right">
           <span className="row-count">
