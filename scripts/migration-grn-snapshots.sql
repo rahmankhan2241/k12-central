@@ -1,12 +1,11 @@
 -- ============================================================================
--- Pending GRN: cloud snapshot of the LAST uploaded file
+-- Pending GRN: cloud snapshot of the LAST PREPARED report result
 -- Run this ONCE in the Supabase SQL Editor (Dashboard -> SQL Editor -> Run).
 -- Safe to re-run: IF NOT EXISTS / DROP POLICY IF EXISTS guards everywhere.
 -- ============================================================================
 
--- One row, keyed 'latest': whatever GRN file was uploaded most recently.
--- Storing the PARSED matrix (columns + rows of strings) means the report and
--- Ask AI can restore it without re-parsing the original file.
+-- One row, keyed 'latest': the result of the most recent "Prepare Report"
+-- run (funnel, plant pivot, filtered rows) — NOT the whole raw file.
 create table if not exists public.grn_snapshots (
   snapshot_key text primary key,
   file_name    text not null,
@@ -18,6 +17,10 @@ create table if not exists public.grn_snapshots (
   uploaded_at  timestamptz not null default now(),
   updated_at   timestamptz not null default now()
 );
+
+-- NOTE on `rows`: for this table it holds the WHOLE versioned prepared-report
+-- payload ({kind:'prepared', funnel, plantRows, filteredRows, ...}), not a
+-- plain matrix. The app reads/writes it as jsonb — no extra column needed.
 
 -- Keep updated_at honest on every upsert.
 create or replace function public.grn_snapshots_touch()

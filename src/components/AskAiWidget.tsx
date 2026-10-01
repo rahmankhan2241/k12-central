@@ -220,11 +220,12 @@ export default function AskAiWidget({ page }: { page: string }) {
     const loadGrn = async (): Promise<GrnSource | null> => {
       const snap = await loadGrnSnapshot();
       if (!snap) return null;
+      // The snapshot holds the PREPARED report — analyse its final rows.
       return {
         fileName: snap.fileName,
-        columns: snap.columns,
-        rowCount: snap.rowCount,
-        getRows: () => snap.rows,
+        columns: snap.columnsForExport,
+        rowCount: snap.filteredRows.length,
+        getRows: () => snap.filteredRows,
       };
     };
 

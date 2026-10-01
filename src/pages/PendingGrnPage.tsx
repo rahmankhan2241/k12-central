@@ -41,6 +41,8 @@ export default function PendingGrnPage() {
   // always shows the last-updated data, even after a reload or on another PC.
   const [snapshotStatus, setSnapshotStatus] = useState<"loading" | "saved" | "saving" | "failed" | "none">("loading");
   const [snapshotError, setSnapshotError] = useState<string | null>(null);
+  /** Name of the raw file the restored prepared report came from. */
+  const [reportFileName, setReportFileName] = useState<string | null>(null);
   const [banner, setBanner] = useState<{
     kind: "error" | "success";
     missing: string[];
@@ -65,8 +67,8 @@ export default function PendingGrnPage() {
 
   const validationOk = banner?.kind === "success";
 
-  // Restore the last-uploaded GRN from the database on first load (before the
-  // user picks a fresh file this session).
+  // Restore the last PREPARED report from the database on first load, so the
+  // page reopens on the final result (never the raw file).
   useEffect(() => {
     let cancelled = false;
     void (async () => {
@@ -76,16 +78,20 @@ export default function PendingGrnPage() {
         setSnapshotStatus("none");
         return;
       }
-      setReport((prev) => {
-        if (prev) return prev; // a file was already picked this session — never clobber it
-        const rows: ReportRow[] = snap.rows.map((cells, i) => ({ id: i, cells }));
+      setReportFileName(snap.fileName);
+      setPrepared((prev) => {
+        if (prev) return prev; // already working on something this session
         return {
-          fileName: snap.fileName,
-          fileSize: snap.fileSize,
-          sheetName: snap.sheetName,
-          columns: snap.columns,
-          rows,
-          uploadedAt: new Date(snap.uploadedAt),
+          generatedAt: new Date(snap.generatedAt),
+          paramsUsed: snap.paramsUsed,
+          funnel: snap.funnel,
+          finalRowCount: snap.finalRowCount,
+          overallDistinctDocs: snap.overallDistinctDocs,
+          plantRows: snap.plantRows,
+          filteredRows: snap.filteredRows.map((cells, i) => ({ id: i, cells })),
+          filteredRowZbh: snap.filteredRowZbh,
+          columnsForExport: snap.columnsForExport,
+          warnings: snap.warnings,
         };
       });
       setSnapshotStatus("saved");
@@ -106,6 +112,19 @@ export default function PendingGrnPage() {
     });
     return () => unregisterGrnSource();
   }, [report]);
+
+  // When only the PREPARED result was restored (no raw file in memory), Ask AI
+  // analyses the final filtered rows of that prepared report.
+  useEffect(() => {
+    if (report || !prepared) return;
+    registerGrnSource({
+      fileName: "Prepared GRN report (last saved)",
+      columns: prepared.columnsForExport,
+      rowCount: prepared.filteredRows.length,
+      getRows: () => prepared.filteredRows.map((r) => r.cells),
+    });
+    return () => unregisterGrnSource();
+  }, [report, prepared]);
 
   const visibleRows = useMemo(() => {
     if (!report) return [];
@@ -179,26 +198,6 @@ export default function PendingGrnPage() {
     });
     setFilter("");
     setPage(0);
-
-    // Persist the parsed file so this report survives reloads / other devices.
-    const snapshot: GrnSnapshot = {
-      fileName: file.name,
-      sheetName,
-      columns: fileColumns,
-      rows: rows.map((r) => r.cells.map((c) => String(c))),
-      rowCount: rows.length,
-      fileSize: file.size,
-      uploadedAt: new Date().toISOString(),
-    };
-    setSnapshotStatus("saving");
-    setSnapshotError(null);
-    void saveGrnSnapshot(snapshot).then((res) => {
-      if (res.ok) setSnapshotStatus("saved");
-      else {
-        setSnapshotStatus("failed");
-        setSnapshotError(res.error ?? "Could not save to the database.");
-      }
-    });
   };
 
   const exportCsv = async () => {
@@ -232,8 +231,40 @@ export default function PendingGrnPage() {
 
   const runPrepare = () => {
     if (!report) return;
-    setPrepared(prepareReport(report, params, branchZbhMapping));
+    const result = prepareReport(report, params, branchZbhMapping);
+    setPrepared(result);
     setPrepareNote(false);
+
+    // Persist the FINAL prepared result (not the raw file) so reloads and
+    // other devices reopen straight on these numbers.
+    const snapshot: GrnSnapshot = {
+      kind: "prepared",
+      fileName: report.fileName,
+      sheetName: report.sheetName,
+      generatedAt: result.generatedAt.toISOString(),
+      paramsUsed: {
+        startDate: params.startDate,
+        endDate: params.endDate,
+        taproot: params.taproot,
+      },
+      funnel: result.funnel,
+      finalRowCount: result.finalRowCount,
+      overallDistinctDocs: result.overallDistinctDocs,
+      plantRows: result.plantRows,
+      filteredRows: result.filteredRows.map((r) => r.cells),
+      filteredRowZbh: result.filteredRowZbh,
+      columnsForExport: result.columnsForExport,
+      warnings: result.warnings,
+    };
+    setSnapshotStatus("saving");
+    setSnapshotError(null);
+    void saveGrnSnapshot(snapshot).then((res) => {
+      if (res.ok) setSnapshotStatus("saved");
+      else {
+        setSnapshotStatus("failed");
+        setSnapshotError(res.error ?? "Could not save to the database.");
+      }
+    });
   };
 
   // From the unmapped-plants card: append rows to the saved mapping, then
@@ -338,14 +369,46 @@ export default function PendingGrnPage() {
         </div>
       )}
 
-      {prepared && report ? (
-        <PreparedReportView
-          prepared={prepared}
-          onBack={() => setPrepared(null)}
-          mapping={branchZbhMapping}
-          mappingStatus={mappingStatus}
-          onAddMappingRows={addMappingRows}
-        />
+      {prepared ? (
+        <>
+          {!report && (
+            <div className="validation-banner success" role="status" style={{ marginBottom: 14 }}>
+              <span style={{ marginTop: 1, flexShrink: 0 }}>
+                <CheckCircleIcon size={17} />
+              </span>
+              <div>
+                Last prepared report restored from the cloud — generated{" "}
+                <b>
+                  {prepared.generatedAt.toLocaleString("en-IN", {
+                    day: "numeric",
+                    month: "short",
+                    year: "numeric",
+                    hour: "2-digit",
+                    minute: "2-digit",
+                  })}
+                </b>
+                {" "}from <b>{reportFileName ?? "the last uploaded file"}</b>. Upload the RAW file
+                again to re-run it with fresh data.
+              </div>
+            </div>
+          )}
+          {snapshotStatus !== "none" && (
+            <div className="param-note" style={{ marginBottom: 8 }}>
+              Cloud snapshot:{" "}
+              {snapshotStatus === "saving" && "saving final result…"}
+              {snapshotStatus === "saved" && "final result saved ✓"}
+              {snapshotStatus === "failed" &&
+                `save failed${snapshotError ? ` — ${snapshotError}` : ""}`}
+            </div>
+          )}
+          <PreparedReportView
+            prepared={prepared}
+            onBack={() => setPrepared(null)}
+            mapping={branchZbhMapping}
+            mappingStatus={mappingStatus}
+            onAddMappingRows={addMappingRows}
+          />
+        </>
       ) : !report ? (
         <div className="card upload-card">
           <div
