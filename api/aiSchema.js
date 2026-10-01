@@ -13,6 +13,8 @@
  *
  * NOTE: this file is plain JS (no build step) so the Vercel serverless
  * function `api/ask-ai.js` can import it directly, exactly like the dev shim.
+ * The GROQ_API_KEY / NVIDIA_API_KEY environment variables must be set on the
+ * Vercel project (all environments) for the provider chain to come online.
  */
 
 // ---------------------------------------------------------------------------
