@@ -35,12 +35,17 @@
 // separate requests, so one invocation = one model round trip).
 export const maxDuration = 60;
 
+import { buildInterpreterPrompt } from "./aiSchema.js";
+
 const MAX_MESSAGE_CHARS = 6_000;
 const MAX_MESSAGES = 14;
 const MAX_TOOL_RESULT_CHARS = 24_000;
 const MAX_TOOL_ROUNDS = 6;
 // Per-attempt timeout; on timeout/4xx we fall through to the next candidate.
 const REQUEST_TIMEOUT_MS = 20_000;
+// Whole-invocation budget (module scope: the interpreter and the main loop
+// share it). Stay under the platform's 60s cap.
+const TOTAL_BUDGET_MS = 55_000;
 
 // ---------------------------------------------------------------------------
 // Provider chain
@@ -274,7 +279,7 @@ function toolResultJson(tr) {
 // Provider call (native tools) — returns the assistant message object
 // ---------------------------------------------------------------------------
 
-async function callChat({ baseUrl, apiKey, model, systemPrompt, messages, signal }) {
+async function callChat({ baseUrl, apiKey, model, systemPrompt, messages, signal, tools = TOOLS }) {
   const res = await fetch(`${baseUrl}/chat/completions`, {
     method: "POST",
     signal,
@@ -292,8 +297,12 @@ async function callChat({ baseUrl, apiKey, model, systemPrompt, messages, signal
       // take minutes. 700 keeps replies fast.
       max_tokens: 700,
       ...(model.includes("gpt-oss") ? { reasoning_effort: "low" } : {}),
-      tools: TOOLS,
-      tool_choice: "auto",
+      ...(tools
+        ? {
+            tools,
+            tool_choice: "auto",
+          }
+        : {}),
       messages: [{ role: "system", content: systemPrompt }, ...messages],
     }),
   });
@@ -315,6 +324,109 @@ async function callChat({ baseUrl, apiKey, model, systemPrompt, messages, signal
   }
   const completion = await res.json();
   return completion?.choices?.[0]?.message ?? null;
+}
+
+// ---------------------------------------------------------------------------
+// MIDDLE AGENT — Query Interpreter
+//
+// Runs BEFORE the tool-calling round on a fresh question. It knows the full
+// Supabase schema (api/aiSchema.js) and translates the user's raw query
+// (typos, relative dates, vague wording) into a precise structured request
+// that is threaded into the main agent's context for EVERY following round.
+// ---------------------------------------------------------------------------
+
+const INTERPRETER_MARKER = "[QUERY INTERPRETATION]";
+const MAX_INTERPRETATION_CHARS = 3_000;
+const INTERPRET_TEMPERATURE = 0;
+
+function interpretationMessage(interp) {
+  return `${INTERPRETER_MARKER} The user's request, normalized by the schema-aware query interpreter:\n${JSON.stringify(
+    interp
+  )}\nTreat the interpretation's args as the request to fulfill (you may refine values that tool results show as invalid).${
+    Array.isArray(interp?.assumptions) && interp.assumptions.length
+      ? ` Assumptions: ${interp.assumptions.join("; ")}.`
+      : ""
+  }`;
+}
+
+/**
+ * One interpreter round trip across the provider chain. Returns the parsed
+ * interpretation object, or null if no provider produced valid JSON (the
+ * main agent then runs unassisted, as before).
+ */
+async function runInterpreter({ source, userText, history, startedAt }) {
+  const systemPrompt = buildInterpreterPrompt(source, new Date().toLocaleDateString("en-IN", { day: "numeric", month: "long", year: "numeric" }));
+  const convo = [
+    ...history.slice(0, -1).map((m) => ({ role: m.role, content: m.content.slice(0, MAX_MESSAGE_CHARS) })),
+    { role: "user", content: String(userText).slice(0, MAX_MESSAGE_CHARS) },
+  ];
+  let lastError = null;
+  outer: for (const provider of providerChain()) {
+    for (const model of provider.models) {
+      const elapsed = Date.now() - startedAt;
+      if (Date.now() - startedAt > TOTAL_BUDGET_MS - 8_000) break outer; // leave room for round 1
+      const remaining = Math.min(REQUEST_TIMEOUT_MS, TOTAL_BUDGET_MS - elapsed - 8_000);
+      if (remaining < 5_000) break outer;
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), remaining);
+      const tag = `${provider.name}:${model}`;
+      try {
+        const res = await fetch(`${provider.baseUrl}/chat/completions`, {
+          method: "POST",
+          signal: controller.signal,
+          headers: {
+            Authorization: `Bearer ${provider.apiKey}`,
+            "Content-Type": "application/json",
+            Accept: "application/json",
+          },
+          body: JSON.stringify({
+            model,
+            temperature: INTERPRET_TEMPERATURE,
+            max_tokens: 600,
+            ...(model.includes("gpt-oss") ? { reasoning_effort: "low" } : {}),
+            // Structured Outputs where supported; parse + validate regardless.
+            response_format: { type: "json_object" },
+            messages: [
+              { role: "system", content: systemPrompt },
+              ...convo,
+              { role: "user", content: "Interpret the latest user message now. Reply with the single JSON object only." },
+            ],
+          }),
+        });
+        if (!res.ok) {
+          const errBody = await res.text().catch(() => "");
+          lastError = `interpreter ${res.status} (${tag}): ${errBody.slice(0, 160)}`;
+          if ([410, 404, 403, 429, 503, 400].includes(res.status)) continue; // json_object unsupported → next model
+          break outer;
+        }
+        const completion = await res.json();
+        const raw = cleanAnswer(completion?.choices?.[0]?.message?.content ?? "");
+        if (!raw) {
+          lastError = `interpreter returned no content (${tag})`;
+          continue;
+        }
+        const start = raw.indexOf("{");
+        const end = raw.lastIndexOf("}");
+        if (start === -1 || end <= start) {
+          lastError = `interpreter returned non-JSON (${tag})`;
+          continue;
+        }
+        const interp = JSON.parse(raw.slice(start, end + 1));
+        if (!interp || typeof interp !== "object" || typeof interp.understanding !== "string") {
+          lastError = `interpreter JSON not usable (${tag})`;
+          continue;
+        }
+        return { interp, model: tag };
+      } catch (e) {
+        lastError = e.name === "AbortError" ? `interpreter timed out (${tag})` : e.message;
+        continue;
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+  }
+  console.warn("[ask-ai] interpreter skipped:", lastError); // non-fatal — proceed without it
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -361,7 +473,22 @@ export default async function handler(req, res) {
     const today = new Date().toLocaleDateString("en-IN", { day: "numeric", month: "long", year: "numeric" });
     const systemPrompt = buildSystemPrompt(source, today, toolResults.length);
 
+    // --- Middle agent: interpret a FRESH question once, then thread the ---
+    // --- normalized request through every later round.                 ---
+    const lastMsg = messages[messages.length - 1];
+    const priorInterp = [...messages].reverse().find((m) => m.content.startsWith(INTERPRETER_MARKER));
+    const trimmedInterp = priorInterp ? { role: "user", content: priorInterp.content.slice(0, MAX_INTERPRETATION_CHARS) } : null;
+
+    let interpNote = null;
+    if (toolResults.length === 0 && !priorInterp && lastMsg?.role === "user") {
+      const startedAt = Date.now();
+      const out = await runInterpreter({ source, userText: lastMsg.content, history: messages, startedAt });
+      if (out) interpNote = interpretationMessage(out.interp);
+    }
+
     const nimMessages = [...messages];
+    if (interpNote) nimMessages.push({ role: "user", content: interpNote });
+    else if (trimmedInterp) nimMessages.push(trimmedInterp);
     for (const tr of toolResults) {
       const resultJson = toolResultJson(tr);
       if (tr.toolCallId) {
@@ -400,7 +527,6 @@ export default async function handler(req, res) {
 
     let lastError = null;
     const startedAt = Date.now();
-    const TOTAL_BUDGET_MS = 55_000; // stay under the platform's 60s cap
     outer: for (const provider of chain) {
       for (const model of provider.models) {
         const elapsed = Date.now() - startedAt;
@@ -442,7 +568,9 @@ export default async function handler(req, res) {
             }
             if (calls.length > 0) {
               res.writeHead(200, { ...cors, "Content-Type": "application/json" });
-              return res.end(JSON.stringify({ ok: true, type: "tool_request", calls, model: tag }));
+              return res.end(
+                JSON.stringify({ ok: true, type: "tool_request", calls, model: tag, interpretation: interpNote })
+              );
             }
           }
           if (!content) {

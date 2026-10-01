@@ -426,6 +426,10 @@ export type AiPageSource =
       pageTitle: string;
       year: string;
       rowCount: number;
+      /** All grade values present in this year's rows (exact spellings). */
+      grades: string[];
+      /** Months (yyyy-mm) that actually have first_paid_date data. */
+      dataMonths: string[];
       zones: string[];
       zoneByBranch: Record<string, string>;
       icseRules: Array<{ branch: string; grade: string }>;
@@ -443,7 +447,7 @@ export type AiPageSource =
 export function buildPageSource(opts: {
   page: string;
   pageTitle: string;
-  historicRows?: Array<{ branch: string }>;
+  historicRows?: Array<{ branch: string; grade: string; first_paid_date?: string }>;
   year?: string;
   zoneByBranch?: Map<string, string>;
   icseRules?: Array<{ branch: string; grade: string }>;
@@ -453,12 +457,26 @@ export function buildPageSource(opts: {
   if (page === "historic-report") {
     const zoneByBranch = opts.zoneByBranch ?? new Map();
     const zones = [...new Set([...zoneByBranch.values()].filter(Boolean))].sort();
+    // Value domains straight from the live rows, so the interpreter can map
+    // "6th" → the exact grade spelling and "last month" → a month with data.
+    const grades = [...new Set((opts.historicRows ?? []).map((r) => r.grade).filter(Boolean))].sort(
+      (a, b) => a.localeCompare(b, undefined, { numeric: true })
+    );
+    const dataMonths = [
+      ...new Set(
+        (opts.historicRows ?? [])
+          .map((r) => (r.first_paid_date ?? "").slice(0, 7))
+          .filter((m) => /^\d{4}-\d{2}$/.test(m))
+      ),
+    ].sort();
     return {
       kind: "payments",
       page,
       pageTitle,
       year: opts.year ?? "",
       rowCount: opts.historicRows?.length ?? 0,
+      grades,
+      dataMonths,
       zones,
       zoneByBranch: Object.fromEntries(zoneByBranch),
       icseRules: opts.icseRules ?? [],

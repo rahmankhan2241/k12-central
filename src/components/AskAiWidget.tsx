@@ -21,6 +21,9 @@ type ToolResult = {
 
 const MAX_TOOL_ROUNDS = 6;
 
+/** Server-injected interpretation (middle agent) — replayed silently, never shown. */
+const INTERPRETATION_PREFIX = "[QUERY INTERPRETATION]";
+
 /**
  * Floating "Ask AI" button + chat panel with an agentic loop:
  *  1. POST question + light page-source descriptor
@@ -116,8 +119,9 @@ export default function AskAiWidget({ page }: { page: string }) {
             page,
             pageTitle: pageTitle[page] ?? page,
             source,
-            // History WITHOUT tool markers: user/assistant prose only.
-            messages: history.filter((m) => !m.content.startsWith("[called ")).slice(-12),
+            // History WITHOUT tool markers or interpreter notes: prose only.
+            // (The server re-injects a fresh interpretation for each new question.)
+            messages: history.filter((m) => !m.content.startsWith("[called ") && !m.content.startsWith(INTERPRETATION_PREFIX)).slice(-12),
             toolResults,
           }),
         });
@@ -128,6 +132,11 @@ export default function AskAiWidget({ page }: { page: string }) {
         if (body.type === "answer") {
           setMessages([...history, { role: "assistant", content: body.answer }]);
           return;
+        }
+        // The server may attach the middle agent's interpretation as a user
+        // note — keep it in the loop history (silently) so later rounds see it.
+        if (body.interpretation) {
+          history = [...history, { role: "user", content: String(body.interpretation).slice(0, 3000) }];
         }
         // Tool request → execute locally, track results, show a status line.
         const calls: Array<{ tool: string; args: unknown; toolCallId: string | null }> = Array.isArray(body.calls)
@@ -150,7 +159,8 @@ export default function AskAiWidget({ page }: { page: string }) {
       ]);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
-      setMessages(history.filter((m) => !m.content.startsWith("[called "))); // keep user msg for retry
+      // Keep the user msg for retry; drop tool/interpreter plumbing.
+      setMessages(history.filter((m) => !m.content.startsWith("[called ") && !m.content.startsWith(INTERPRETATION_PREFIX)));
     } finally {
       setBusy(false);
       setBusyNote("");
@@ -208,6 +218,8 @@ export default function AskAiWidget({ page }: { page: string }) {
               </div>
             )}
             {messages.map((m, i) => {
+              // Interpreter notes are loop plumbing — never rendered.
+              if (m.role === "user" && m.content.startsWith(INTERPRETATION_PREFIX)) return null;
               // Tool-call steps are hidden entirely while the loop is idle —
               // only the transient status line shows activity.
               if (m.role === "assistant" && m.content.startsWith("[called ")) {
