@@ -2246,6 +2246,61 @@ button.sync-pill.failed:hover {
   color: #fff;
 }
 
+.askai-head-actions {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.askai-iconbtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 27px;
+  height: 27px;
+  padding: 0;
+  background: none;
+  border: none;
+  color: rgba(255, 255, 255, 0.85);
+  font-size: 14px;
+  cursor: pointer;
+  border-radius: 7px;
+}
+
+.askai-iconbtn:hover {
+  background: rgba(255, 255, 255, 0.14);
+  color: #fff;
+}
+
+.askai-iconbtn.on {
+  background: rgba(255, 255, 255, 0.24);
+  color: #fff;
+}
+
+/* Stretch — roomier panel, still floating in the corner */
+.askai-panel.askai-stretch {
+  width: min(760px, calc(100vw - 44px));
+  height: min(80vh, 820px);
+}
+
+/* Full screen — fills the viewport with a slim margin */
+.askai-panel.askai-full {
+  top: 10px;
+  left: 10px;
+  right: 10px;
+  bottom: 10px;
+  width: auto;
+  max-width: none;
+  height: auto;
+  max-height: none;
+}
+
+.askai-panel.askai-stretch .askai-msg,
+.askai-panel.askai-full .askai-msg {
+  max-width: min(78%, 760px);
+}
+
 .askai-list {
   flex: 1;
   overflow-y: auto;

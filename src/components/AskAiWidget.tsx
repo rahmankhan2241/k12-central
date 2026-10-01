@@ -24,6 +24,52 @@ const MAX_TOOL_ROUNDS = 6;
 /** Server-injected interpretation (middle agent) — replayed silently, never shown. */
 const INTERPRETATION_PREFIX = "[QUERY INTERPRETATION]";
 
+type View = "normal" | "stretch" | "full";
+
+function StretchIcon({ on }: { on: boolean }) {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      {on ? (
+        <>
+          <path d="M4 14h6v6" />
+          <path d="M20 10h-6V4" />
+          <path d="M14 10l7-7" />
+          <path d="M3 21l7-7" />
+        </>
+      ) : (
+        <>
+          <path d="M15 3h6v6" />
+          <path d="M9 21H3v-6" />
+          <path d="M21 3l-7 7" />
+          <path d="M3 21l7-7" />
+        </>
+      )}
+    </svg>
+  );
+}
+
+function FullscreenIcon({ on }: { on: boolean }) {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      {on ? (
+        <>
+          <path d="M8 3v3a2 2 0 0 1-2 2H3" />
+          <path d="M21 8h-3a2 2 0 0 1-2-2V3" />
+          <path d="M3 16h3a2 2 0 0 1 2 2v3" />
+          <path d="M16 21v-3a2 2 0 0 1 2-2h3" />
+        </>
+      ) : (
+        <>
+          <path d="M8 3H5a2 2 0 0 0-2 2v3" />
+          <path d="M16 3h3a2 2 0 0 1 2 2v3" />
+          <path d="M8 21H5a2 2 0 0 1-2-2v-3" />
+          <path d="M16 21h3a2 2 0 0 0 2-2v-3" />
+        </>
+      )}
+    </svg>
+  );
+}
+
 /**
  * Floating "Ask AI" button + chat panel with an agentic loop:
  *  1. POST question + light page-source descriptor
@@ -41,6 +87,7 @@ export default function AskAiWidget({ page }: { page: string }) {
   const [busy, setBusy] = useState(false);
   const [busyNote, setBusyNote] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [view, setView] = useState<View>("normal");
   const listRef = useRef<HTMLDivElement>(null);
 
   const historic = useHistoricGlobal();
@@ -96,6 +143,16 @@ export default function AskAiWidget({ page }: { page: string }) {
   useEffect(() => {
     listRef.current?.scrollTo({ top: listRef.current.scrollHeight });
   }, [messages, busy, busyNote]);
+
+  // Escape steps back out of fullscreen / stretch (never closes the chat).
+  useEffect(() => {
+    if (!open || view === "normal") return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setView("normal");
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [open, view]);
 
   const send = async (rawText?: string) => {
     const text = (rawText ?? input).trim();
@@ -183,7 +240,13 @@ export default function AskAiWidget({ page }: { page: string }) {
         </button>
       )}
       {open && (
-        <div className="askai-panel" role="dialog" aria-label="Ask AI">
+        <div
+          className={`askai-panel ${view === "stretch" ? "askai-stretch" : ""} ${
+            view === "full" ? "askai-full" : ""
+          }`}
+          role="dialog"
+          aria-label="Ask AI"
+        >
           <div className="askai-head">
             <span className="askai-head-icon" aria-hidden>✦</span>
             <div>
@@ -195,9 +258,32 @@ export default function AskAiWidget({ page }: { page: string }) {
                 {source.kind === "none" && " · no data on this page"}
               </div>
             </div>
-            <button className="askai-close" onClick={() => setOpen(false)} aria-label="Close">
-              ✕
-            </button>
+            <div className="askai-head-actions">
+              <button
+                className={`askai-iconbtn ${view === "stretch" ? "on" : ""}`}
+                onClick={() => setView((v) => (v === "stretch" ? "normal" : "stretch"))}
+                aria-label={view === "stretch" ? "Back to normal size" : "Stretch the panel"}
+                title={view === "stretch" ? "Back to normal size" : "Stretch — larger panel"}
+              >
+                <StretchIcon on={view === "stretch"} />
+              </button>
+              <button
+                className={`askai-iconbtn ${view === "full" ? "on" : ""}`}
+                onClick={() => setView((v) => (v === "full" ? "normal" : "full"))}
+                aria-label={view === "full" ? "Exit full screen" : "Full screen"}
+                title={view === "full" ? "Exit full screen" : "Full screen"}
+              >
+                <FullscreenIcon on={view === "full"} />
+              </button>
+              <button
+                className="askai-iconbtn"
+                onClick={() => setOpen(false)}
+                aria-label="Close"
+                title="Close"
+              >
+                ✕
+              </button>
+            </div>
           </div>
 
           <div className="askai-list" ref={listRef}>
