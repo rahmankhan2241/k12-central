@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { useHistoricGlobal } from "../useHistoricFetch";
 import { useBranchZbhMapping } from "../useBranchZbhMapping";
 import { useIcseConfig } from "../useIcseConfig";
@@ -11,13 +11,29 @@ import {
   type PaymentRowLite,
 } from "../askAiSource";
 
-type Msg = { role: "user" | "assistant"; content: string };
+type Msg = { role: "user" | "assistant"; content: string; trace?: TraceStep[] };
 type ToolResult = {
   tool: string;
   args: unknown;
   result: Record<string, unknown>;
   toolCallId: string | null;
 };
+
+/**
+ * Pipeline trace for one answer — shown behind a "How this answer was built"
+ * toggle so the user can see exactly what the middle agent told the model, the
+ * data lookup it produced, and which model answered.
+ */
+type TraceStep =
+  | {
+      kind: "interpret";
+      understanding: string;
+      assumptions: string[];
+      tool: string | null;
+      args: unknown;
+    }
+  | { kind: "tool"; tool: string; args: unknown; result: Record<string, unknown> }
+  | { kind: "model"; model: string };
 
 const MAX_TOOL_ROUNDS = 6;
 
@@ -67,6 +83,71 @@ function FullscreenIcon({ on }: { on: boolean }) {
         </>
       )}
     </svg>
+  );
+}
+
+function fmtJson(v: unknown, max = 900): string {
+  let s: string;
+  try {
+    s = JSON.stringify(v, null, 2) ?? String(v);
+  } catch {
+    s = String(v);
+  }
+  return s.length > max ? s.slice(0, max) + "\n… (truncated)" : s;
+}
+
+/** Collapsible view of how one answer was produced. */
+function TraceView({ steps }: { steps: TraceStep[] }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="askai-trace-wrap">
+      <button
+        type="button"
+        className="askai-trace-toggle"
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+      >
+        {open ? "▾" : "▸"} How this answer was built
+      </button>
+      {open && (
+        <div className="askai-trace">
+          {steps.map((s, i) => {
+            if (s.kind === "interpret") {
+              return (
+                <div key={i} className="askai-trace-step">
+                  <div className="askai-trace-cap">🧠 Query Interpreter → told the model</div>
+                  <div className="askai-trace-under">“{s.understanding}”</div>
+                  {s.assumptions.length > 0 && (
+                    <div className="askai-trace-dim">Assumptions: {s.assumptions.join("; ")}</div>
+                  )}
+                  {s.tool && (
+                    <pre>{fmtJson({ suggestedTool: s.tool, args: s.args })}</pre>
+                  )}
+                </div>
+              );
+            }
+            if (s.kind === "tool") {
+              return (
+                <div key={i} className="askai-trace-step">
+                  <div className="askai-trace-cap">🔎 Data lookup → {s.tool}</div>
+                  <div className="askai-trace-dim">
+                    Ran on this page's live Supabase rows (in the browser) — args:
+                  </div>
+                  <pre>{fmtJson(s.args, 500)}</pre>
+                  <div className="askai-trace-dim">Response:</div>
+                  <pre>{fmtJson(s.result, 900)}</pre>
+                </div>
+              );
+            }
+            return (
+              <div key={i} className="askai-trace-step">
+                <div className="askai-trace-cap">✅ Final answer written by {s.model}</div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -167,6 +248,8 @@ export default function AskAiWidget({ page }: { page: string }) {
       // Display-only tool markers, kept out of what the server receives.
       let display: Msg[] = [...history];
       const toolResults: ToolResult[] = [];
+      // Pipeline trace for this question (shown under the final answer).
+      const trace: TraceStep[] = [];
       for (let round = 0; round <= MAX_TOOL_ROUNDS; round++) {
         setBusyNote(round === 0 ? "Thinking…" : `Checking the data (${round}/${MAX_TOOL_ROUNDS})…`);
         const res = await fetch("/api/ask-ai", {
@@ -187,13 +270,32 @@ export default function AskAiWidget({ page }: { page: string }) {
           throw new Error(body.error || `Ask AI failed (${res.status})`);
         }
         if (body.type === "answer") {
-          setMessages([...history, { role: "assistant", content: body.answer }]);
+          setMessages([
+            ...history,
+            {
+              role: "assistant",
+              content: body.answer,
+              trace: trace.length > 0 ? [...trace, { kind: "model", model: String(body.model ?? "the model") }] : undefined,
+            },
+          ]);
           return;
         }
         // The server may attach the middle agent's interpretation as a user
         // note — keep it in the loop history (silently) so later rounds see it.
         if (body.interpretation) {
           history = [...history, { role: "user", content: String(body.interpretation).slice(0, 3000) }];
+        }
+        // Structured interpretation → first trace step (what the middle agent
+        // handed to the model, after fixing typos / resolving dates).
+        if (body.interp && typeof body.interp === "object") {
+          const it = body.interp as Record<string, unknown>;
+          trace.push({
+            kind: "interpret",
+            understanding: String(it.understanding ?? ""),
+            assumptions: Array.isArray(it.assumptions) ? it.assumptions.map(String) : [],
+            tool: typeof it.tool === "string" ? it.tool : null,
+            args: it.args ?? {},
+          });
         }
         // Tool request → execute locally, track results, show a status line.
         const calls: Array<{ tool: string; args: unknown; toolCallId: string | null }> = Array.isArray(body.calls)
@@ -204,6 +306,7 @@ export default function AskAiWidget({ page }: { page: string }) {
         for (const c of calls) {
           const result = executeAiTool(c.tool, c.args, toolCtx);
           toolResults.push({ tool: c.tool, args: c.args, result, toolCallId: c.toolCallId ?? null });
+          trace.push({ kind: "tool", tool: c.tool, args: c.args, result });
         }
         history = [
           ...history,
@@ -212,7 +315,11 @@ export default function AskAiWidget({ page }: { page: string }) {
       }
       setMessages([
         ...history,
-        { role: "assistant", content: "I couldn't finish this analysis within my data-lookup budget. Please narrow the question and try again." },
+        {
+          role: "assistant",
+          content: "I couldn't finish this analysis within my data-lookup budget. Please narrow the question and try again.",
+          trace: trace.length > 0 ? trace : undefined,
+        },
       ]);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -314,9 +421,12 @@ export default function AskAiWidget({ page }: { page: string }) {
                 ) : null;
               }
               return (
-                <div key={i} className={`askai-msg ${m.role}`}>
-                  {m.content}
-                </div>
+                <Fragment key={i}>
+                  <div className={`askai-msg ${m.role}`}>{m.content}</div>
+                  {m.role === "assistant" && m.trace && m.trace.length > 0 && (
+                    <TraceView steps={m.trace} />
+                  )}
+                </Fragment>
               );
             })}
             {busy && <div className="askai-msg assistant askai-thinking">{busyNote || "Thinking…"}</div>}

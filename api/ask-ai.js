@@ -480,10 +480,16 @@ export default async function handler(req, res) {
     const trimmedInterp = priorInterp ? { role: "user", content: priorInterp.content.slice(0, MAX_INTERPRETATION_CHARS) } : null;
 
     let interpNote = null;
+    // Structured copy of the same interpretation, returned to the widget so the
+    // user can inspect the full pipeline (what the middle agent told the model).
+    let interpObj = null;
     if (toolResults.length === 0 && !priorInterp && lastMsg?.role === "user") {
       const startedAt = Date.now();
       const out = await runInterpreter({ source, userText: lastMsg.content, history: messages, startedAt });
-      if (out) interpNote = interpretationMessage(out.interp);
+      if (out) {
+        interpNote = interpretationMessage(out.interp);
+        interpObj = out.interp;
+      }
     }
 
     const nimMessages = [...messages];
@@ -569,7 +575,14 @@ export default async function handler(req, res) {
             if (calls.length > 0) {
               res.writeHead(200, { ...cors, "Content-Type": "application/json" });
               return res.end(
-                JSON.stringify({ ok: true, type: "tool_request", calls, model: tag, interpretation: interpNote })
+                JSON.stringify({
+                  ok: true,
+                  type: "tool_request",
+                  calls,
+                  model: tag,
+                  interpretation: interpNote,
+                  interp: interpObj,
+                })
               );
             }
           }
