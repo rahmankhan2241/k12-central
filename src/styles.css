@@ -2440,6 +2440,66 @@ button.sync-pill.failed:hover {
   border-bottom-right-radius: 4px;
 }
 
+/* ---- Markdown rendering inside assistant answers ---- */
+.askai-msg.assistant > :first-child { margin-top: 0; }
+.askai-msg.assistant > :last-child { margin-bottom: 0; }
+.askai-msg.assistant strong {
+  font-weight: 700;
+  color: var(--navy-700);
+}
+.askai-msg.assistant table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 8px 0;
+  font-size: 13px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.askai-msg.assistant thead th {
+  background: var(--navy-700);
+  color: #fff;
+  text-align: left;
+  font-weight: 600;
+  padding: 7px 10px;
+  border: none;
+}
+.askai-msg.assistant tbody td {
+  padding: 6px 10px;
+  border-top: 1px solid var(--line);
+  color: var(--ink);
+}
+.askai-msg.assistant tbody tr:nth-child(even) {
+  background: var(--blue-50);
+}
+.askai-msg.assistant ul,
+.askai-msg.assistant ol {
+  margin: 6px 0;
+  padding-left: 20px;
+}
+.askai-msg.assistant li { margin: 3px 0; }
+.askai-msg.assistant code {
+  background: var(--blue-50);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-size: 12.5px;
+}
+/* Tables / bold scale up in stretch & full-screen modes like other text. */
+.askai-panel.askai-stretch .askai-msg.assistant table,
+.askai-panel.askai-full .askai-msg.assistant table {
+  font-size: 15px;
+}
+.askai-panel.askai-stretch .askai-msg.assistant thead th,
+.askai-panel.askai-full .askai-msg.assistant thead th {
+  padding: 9px 12px;
+}
+.askai-panel.askai-stretch .askai-msg.assistant tbody td,
+.askai-panel.askai-full .askai-msg.assistant tbody td {
+  padding: 8px 12px;
+}
+
 .askai-msg.assistant {
   align-self: flex-start;
   background: var(--card);

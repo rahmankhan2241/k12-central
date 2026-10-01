@@ -1,4 +1,6 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { useHistoricGlobal } from "../useHistoricFetch";
 import { useBranchZbhMapping } from "../useBranchZbhMapping";
 import { useIcseConfig } from "../useIcseConfig";
@@ -489,7 +491,12 @@ export default function AskAiWidget({ page }: { page: string }) {
               }
               return (
                 <Fragment key={i}>
-                  <div className={`askai-msg ${m.role}`}>{m.content}</div>
+                  <div className={`askai-msg ${m.role}`}>
+                    {/* Assistant answers arrive as Markdown (bold figures, tables);
+                        user messages render through the same pipeline — react-markdown
+                        escapes raw HTML, so typed text stays literal. */}
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.content}</ReactMarkdown>
+                  </div>
                   {m.role === "assistant" && m.trace && m.trace.length > 0 && (
                     <TraceView steps={m.trace} />
                   )}
