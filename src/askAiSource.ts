@@ -342,17 +342,22 @@ export function executeAnalyzeGrn(
     }
   }
 
-  const valueOf = (g: { value: number; n: number }) =>
-    aggOp === "avg" ? (g.n ? g.value / g.n : NaN) : aggOp === "max" ? NaN : g.value; // max/min handled below
-  void valueOf;
-
   let entries = [...groups.entries()];
-  const dir = String(args.sortBy?.dir ?? "desc").toLowerCase() === "asc" ? 1 : -1;
+  // +1 ascending / -1 descending — the DEFAULT is "top N" = descending.
+  const dirMul = String(args.sortBy?.dir ?? "desc").toLowerCase() === "asc" ? 1 : -1;
   const sortBy = String(args.sortBy?.by ?? (aggOp && aggOp !== "count" ? "value" : "count"));
+  const metric = (g: { count: number; value: number; n: number }) =>
+    aggOp === "sum" || aggOp === "min" || aggOp === "max"
+      ? g.value
+      : aggOp === "avg"
+        ? g.n
+          ? g.value / g.n
+          : 0
+        : g.count;
   if (sortBy === "group") {
-    entries.sort((a, b) => dir * a[0].localeCompare(b[0]));
+    entries.sort((a, b) => dirMul * a[0].localeCompare(b[0]));
   } else {
-    entries.sort((a, b) => dir * (b[1].count - a[1].count) || a[0].localeCompare(b[0]));
+    entries.sort((a, b) => dirMul * (metric(a[1]) - metric(b[1])) || a[0].localeCompare(b[0]));
   }
 
   const outGroups = entries.slice(0, limit).map(([key, g]) => {
