@@ -93,6 +93,17 @@ function FullscreenIcon({ on }: { on: boolean }) {
   );
 }
 
+/**
+ * Normalize the LaTeX delimiters models like to mix in. remark-math only
+ * understands $…$ and $$…$$, so \(…\) → $…$ and \[…\] → $$…$$ before
+ * rendering; otherwise the formula shows up as raw \[ … \] text.
+ */
+function normalizeMath(src: string): string {
+  return src
+    .replace(/\\\[([\s\S]*?)\\\]/g, (_m, body: string) => `\n\n$$\n${body.trim()}\n$$\n\n`)
+    .replace(/\\\(([\s\S]*?)\\\)/g, (_m, body: string) => `$${body.trim()}$`);
+}
+
 function fmtJson(v: unknown, max = 900): string {
   let s: string;
   try {
@@ -502,7 +513,7 @@ export default function AskAiWidget({ page }: { page: string }) {
                       remarkPlugins={[remarkGfm, remarkMath]}
                       rehypePlugins={[rehypeKatex]}
                     >
-                      {m.content}
+                      {normalizeMath(m.content)}
                     </ReactMarkdown>
                   </div>
                   {m.role === "assistant" && m.trace && m.trace.length > 0 && (
