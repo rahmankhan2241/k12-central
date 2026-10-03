@@ -72,6 +72,7 @@ export default function PoPage() {
   const [typedCode, setTypedCode] = useState("");
   const [uploading, setUploading] = useState(false);
   const [uploadDone, setUploadDone] = useState<string | null>(null);
+  const [uploadError, setUploadError] = useState<string | null>(null);
 
   // Edit flow
   const [editId, setEditId] = useState<number | null>(null);
@@ -138,6 +139,7 @@ export default function PoPage() {
   // ------------------------------------------------------------------
   const onFilePicked = async (f: File | null) => {
     setUploadDone(null);
+    setUploadError(null);
     setParseError(null);
     setParsedCount(null);
     setConfirmDelete(false);
@@ -153,7 +155,9 @@ export default function PoPage() {
       }
     } catch (e) {
       setPendingFile(null);
-      setParseError(e instanceof Error ? e.message : String(e));
+      const msg = e instanceof Error ? e.message : String(e);
+      setParseError(msg);
+      setUploadError(msg);
     }
   };
 
@@ -163,26 +167,38 @@ export default function PoPage() {
       setConfirmDelete(false); // show first warning next
       setConfirmCode(makeConfirmCode());
       setTypedCode("");
+    } else {
+      // Append has no destructive warnings — run it straight away.
+      void runUpload("append");
     }
   };
 
-  const runUpload = async () => {
-    if (!pendingFile || !uploadMode || parsedCount == null) return;
+  const runUpload = async (modeOverride?: UploadMode) => {
+    const mode = modeOverride ?? uploadMode;
+    if (!pendingFile || !mode) return;
     setUploading(true);
     setParseError(null);
+    setUploadError(null);
     try {
       const res = await parsePoWorkbook(pendingFile);
-      let done: number;
-      if (uploadMode === "replace") done = await replacePoRows(res.rows);
-      else done = await appendPoRows(res.rows);
+      if (res.rows.length === 0) {
+        throw new Error(
+          "No usable data rows were found in this file. Check that the sheet has PO Date / Category / Material Name / SKU Code / Existing Stock / PO Qty columns with data below them."
+        );
+      }
+      const done = mode === "replace" ? await replacePoRows(res.rows) : await appendPoRows(res.rows);
       const fresh = await loadPoRows();
       setRows(fresh);
       setUploadDone(
-        `${uploadMode === "replace" ? "New upload" : "Appended"}: ${done.toLocaleString("en-IN")} PO rows loaded.`
+        `${mode === "replace" ? "New upload" : "Appended"}: ${done.toLocaleString("en-IN")} PO rows ${mode === "replace" ? "loaded" : "added"}. Database now holds ${fresh.length.toLocaleString("en-IN")} rows.`
       );
       resetUpload();
     } catch (e) {
-      setParseError(e instanceof Error ? e.message : String(e));
+      const msg = e instanceof Error ? e.message : String(e);
+      setParseError(msg);
+      setUploadError(msg);
+      // Close the modal so the error banner is actually visible.
+      resetUpload();
     } finally {
       setUploading(false);
     }
@@ -327,6 +343,13 @@ export default function PoPage() {
         </div>
       )}
 
+      {uploadError && (
+        <div className="upload-error">
+          <AlertIcon size={14} />
+          <span>Upload failed: {uploadError}</span>
+        </div>
+      )}
+
       {/* ------------------------------------------------ Upload mode modal (step 1) */}
       {pendingFile && parsedCount != null && !uploadMode && (
         <div
@@ -433,10 +456,7 @@ export default function PoPage() {
               <div className="po-warn-actions">
                 <button className="btn" onClick={resetUpload}>
                   Cancel
-                </button>
-                <button
-                  className="btn danger"
-                  onClick={() => void runUpload()}
+                </button>                <button className="btn danger" onClick={() => void runUpload("replace")}
                   disabled={typedCode !== confirmCode || uploading}
                 >
                   {uploading ? "Processing…" : "Delete & Upload"}

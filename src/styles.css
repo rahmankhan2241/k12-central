@@ -591,6 +591,20 @@ select {
   border-radius: 10px;
 }
 
+.upload-success {
+  margin-top: 14px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--green-50);
+  border: 1px solid #bfe6d3;
+  color: var(--green-700);
+  font-size: 13px;
+  font-weight: 600;
+  padding: 10px 14px;
+  border-radius: 10px;
+}
+
 /* ---------- Selected file banner ---------- */
 .file-banner {
   display: flex;
