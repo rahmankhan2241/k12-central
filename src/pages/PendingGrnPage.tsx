@@ -11,7 +11,6 @@ import {
   findMissingColumns,
 } from "../reportConfig";
 import type { BranchZbhMapping, ParsedReport, ReportRow } from "../types";
-import { registerGrnSource, unregisterGrnSource } from "../askAiSource";
 import {
   loadGrnSnapshot,
   saveGrnSnapshot,
@@ -100,31 +99,6 @@ export default function PendingGrnPage() {
       cancelled = true;
     };
   }, []);
-
-  // Expose the uploaded file to the Ask AI agent (it analyses it in memory).
-  useEffect(() => {
-    if (!report) return;
-    registerGrnSource({
-      fileName: report.fileName,
-      columns: report.columns,
-      rowCount: report.rows.length,
-      getRows: () => report.rows.map((r) => r.cells),
-    });
-    return () => unregisterGrnSource();
-  }, [report]);
-
-  // When only the PREPARED result was restored (no raw file in memory), Ask AI
-  // analyses the final filtered rows of that prepared report.
-  useEffect(() => {
-    if (report || !prepared) return;
-    registerGrnSource({
-      fileName: "Prepared GRN report (last saved)",
-      columns: prepared.columnsForExport,
-      rowCount: prepared.filteredRows.length,
-      getRows: () => prepared.filteredRows.map((r) => r.cells),
-    });
-    return () => unregisterGrnSource();
-  }, [report, prepared]);
 
   const visibleRows = useMemo(() => {
     if (!report) return [];
