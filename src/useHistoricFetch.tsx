@@ -293,7 +293,6 @@ export function HistoricProvider({ children }: { children: ReactNode }) {
         if (mounted.current) {
           setFetchProgress(`${y} data written to Supabase — refreshing the report…`);
         }
-        await reloadLogsRef.current();
         memoryCache.delete(y); // the pipeline wrote new rows — drop any stale cached snapshot
         await deletePaymentCache(y);
         await loadAllRows(y, { fresh: true }); // UI shows fresh rows before the button finishes
@@ -307,6 +306,14 @@ export function HistoricProvider({ children }: { children: ReactNode }) {
         }
         throw e;
       } finally {
+        // Refresh the banner on BOTH outcomes. A failed run still writes a
+        // "failed" row to historic_fetch_log, so the last-fetched time must
+        // move even when the pipeline errors — never leave it silently stale.
+        try {
+          await reloadLogsRef.current();
+        } catch {
+          /* best-effort — the error banner already carries the real failure */
+        }
         setFetching(false);
       }
     },
