@@ -10,6 +10,7 @@ import DateMultiSelect, {
   type DateSelection,
 } from "../components/DateMultiSelect";
 import { findZoneByBranchEduvate } from "../types";
+import { isFrozenYear } from "../sessionYears";
 import type { BranchZbhMapping } from "../types";
 import { exportPaymentExcel } from "../exportPaymentExcel";
 import type { PaymentExportRow } from "../exportPaymentExcel";
@@ -150,9 +151,12 @@ function YearDropdown({
                 <span className="year-dd-year">{y}</span>
                 {disabled ? (
                   <span className="year-dd-tag">not started</span>
-                ) : y === value ? (
-                  <span className="year-dd-check">✓</span>
-                ) : null}
+                ) : (
+                  <>
+                    {isFrozenYear(y) && <span className="year-dd-tag frozen">saved</span>}
+                    {y === value && <span className="year-dd-check">✓</span>}
+                  </>
+                )}
               </button>
             );
           })}
@@ -212,6 +216,9 @@ export default function HistoricReportPage() {
 
   const log = logs[`payment_report:${selectedYear}`] ?? logs["payment_report"];
   const busy = fetchPhase !== "idle" || dataLoading;
+  // Closed sessions are permanently saved — their data never changes, so the
+  // fetch pipeline is disabled for them (it only ever runs for 2026-27).
+  const frozen = isFrozenYear(selectedYear);
 
   // Zone per branch (Branch (Eduvate) lookup in the Branch & ZBH Mapping).
   // In-progress typing in the unmapped card deliberately does NOT count here —
@@ -343,6 +350,8 @@ export default function HistoricReportPage() {
   }, [enriched, branch.join("|"), segment.join("|"), grade.join("|")]);
 
   const handleFetchNow = async () => {
+    // Frozen years are read-only — nothing to re-fetch.
+    if (isFrozenYear(selectedYear)) return;
     try {
       await fetchNow("payment", selectedYear);
     } catch {
@@ -486,8 +495,9 @@ export default function HistoricReportPage() {
           Historic Report
         </h1>
         <p className="page-subtitle">
-          Auto-fetched daily at 8:00 AM from Eduvate. Payment Report shows the first payment
-          per student (ERP).
+          Auto-fetched daily at 8:00 AM from Eduvate for 2026-27 only. Closed years (2024-25,
+          2025-26) are permanently saved and never re-fetched. Payment Report shows the first
+          payment per student (ERP).
         </p>
       </div>
 
@@ -526,13 +536,17 @@ export default function HistoricReportPage() {
             <div className="fetch-sub">
               {logsLoading
                 ? "Checking fetch history…"
-                : log
-                  ? `Last fetched ${timeAgo(log.last_fetched_at)} (${fmtDateTime(log.last_fetched_at)})${
-                      log.last_report_date ? ` · data till ${log.last_report_date}` : ""
+                : frozen
+                  ? `Closed session — permanently saved. Its data never changes, so it is never re-fetched (the pipeline runs only for 2026-27).${
+                      log?.last_fetched_at ? ` Archived ${timeAgo(log.last_fetched_at)}.` : ""
                     }`
-                  : selectedYear === "2026-27"
-                    ? "Never fetched yet — click Fetch Now to pull it from Eduvate."
-                    : "Never fetched for this year — click Fetch Now (takes 30–60s)."}
+                  : log
+                    ? `Last fetched ${timeAgo(log.last_fetched_at)} (${fmtDateTime(log.last_fetched_at)})${
+                        log.last_report_date ? ` · data till ${log.last_report_date}` : ""
+                      }`
+                    : selectedYear === "2026-27"
+                      ? "Never fetched yet — click Fetch Now to pull it from Eduvate."
+                      : "Never fetched for this year — click Fetch Now (takes 30–60s)."}
               {log?.last_status === "failed" && log?.last_error && (
                 <span className="fetch-err"> · {log.last_error}</span>
               )}
@@ -544,13 +558,17 @@ export default function HistoricReportPage() {
           <button
             className="btn primary"
             onClick={handleFetchNow}
-            disabled={fetching}
-            title="Runs the whole pipeline for the selected year: downloads from Eduvate, filters and dedupes, writes to Supabase, then refreshes this page"
+            disabled={fetching || frozen}
+            title={
+              frozen
+                ? "This closed session is permanently saved — its data never changes, so there is nothing to re-fetch."
+                : "Runs the whole pipeline for the selected year: downloads from Eduvate, filters and dedupes, writes to Supabase, then refreshes this page"
+            }
           >
             <span className={fetching ? "spin" : ""} style={{ display: "inline-flex" }}>
-              <RefreshIcon size={14} />
+              {frozen ? <CheckCircleIcon size={14} /> : <RefreshIcon size={14} />}
             </span>
-            {fetching ? "Running pipeline…" : "Fetch Now"}
+            {frozen ? "Permanently saved" : fetching ? "Running pipeline…" : "Fetch Now"}
           </button>
         </div>
       </div>

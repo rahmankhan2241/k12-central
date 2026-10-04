@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState } f
 import type { ReactNode } from "react";
 import { supabase, isSupabaseConfigured } from "./supabaseClient";
 import { readPaymentCache, writePaymentCache, deletePaymentCache } from "./paymentCache";
+import { isFrozenYear } from "./sessionYears";
 import type { HistoricFetchLog } from "./types";
 
 /**
@@ -287,6 +288,13 @@ export function HistoricProvider({ children }: { children: ReactNode }) {
   const fetchNow = useCallback(
     async (report: "payment" | "all", year?: string) => {
       const y = year ?? selectedYear;
+      // Closed sessions (2024-25 / 2025-26) are permanently saved: their
+      // snapshot is final, so never run the Eduvate pipeline for them. Load
+      // the stored rows (read-only) and report the no-op.
+      if (isFrozenYear(y)) {
+        await loadAllRows(y);
+        return { ok: true, skipped: true, reason: "frozen", session_year: y };
+      }
       setFetching(true);
       setFetchError(null);
       setFetchPhase("fetching");

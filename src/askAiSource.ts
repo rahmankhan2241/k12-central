@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from "react";
+import { ALL_SESSION_YEARS } from "./sessionYears";
 
 /**
  * Agentic "Ask AI" — client side.
@@ -67,7 +68,7 @@ export type PaymentRowLite = {
 };
 
 /** Every academic year present in the database (payment_report_rows). */
-export const ALL_SESSION_YEARS = ["2026-27", "2025-26", "2024-25"] as const;
+export { ALL_SESSION_YEARS };
 
 export function enrichPayments(
   rows: Array<{

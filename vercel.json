@@ -2,7 +2,7 @@
   "rewrites": [{ "source": "/(.*)", "destination": "/index.html" }],
   "crons": [
     {
-      "path": "/api/fetch-historic?report=all",
+      "path": "/api/fetch-historic?report=payment&year=2026-27",
       "schedule": "30 2 * * *"
     }
   ]

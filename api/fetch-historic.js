@@ -52,6 +52,14 @@ const SESSIONS = {
 };
 const DEFAULT_YEAR = "2026-27";
 
+/**
+ * Closed sessions are FROZEN: their first-payment snapshot is final and lives
+ * permanently in Supabase. The pipeline must never re-download or replace
+ * them, so any request for a frozen year is skipped (the stored data is
+ * returned to the UI by a plain read, never re-fetched from Eduvate).
+ */
+const FROZEN_YEARS = new Set(["2025-26", "2024-25"]);
+
 // ---------- tiny CSV parser (no deps) ----------
 function parseCsv(text) {
   const rows = [];
@@ -303,6 +311,22 @@ export default async function handler(req, res) {
     const requested = (req.query?.year ?? req.query?.session ?? "").toString();
     const sessionYear = SESSIONS[requested] ? requested : DEFAULT_YEAR;
     const session = SESSIONS[sessionYear];
+
+    // Frozen (closed) sessions: never re-download or overwrite — their
+    // snapshot is permanent. Return a no-op so no failed log is written and
+    // the existing fetch-log entry (the original fetch) stays intact.
+    if (FROZEN_YEARS.has(sessionYear)) {
+      res.writeHead(200, { ...cors, "Content-Type": "application/json" });
+      return res.end(
+        JSON.stringify({
+          ok: true,
+          skipped: true,
+          reason: "frozen",
+          session_year: sessionYear,
+          ms: Date.now() - started,
+        })
+      );
+    }
 
     const reportDate = session.reportDate ?? new Date().toISOString().slice(0, 10);
     const fetchedAt = new Date().toISOString();

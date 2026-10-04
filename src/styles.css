@@ -2348,6 +2348,17 @@ button.sync-pill.failed:hover {
   color: var(--amber-600);
 }
 
+/* Closed sessions are permanently saved — a calm green "saved" chip. */
+.year-dd-tag.frozen {
+  background: var(--green-100);
+  color: var(--green-700);
+}
+
+.year-dd-tag.frozen::before {
+  content: "🔒";
+  margin-right: 4px;
+}
+
 .historic-table {
   max-height: 560px;
 }
