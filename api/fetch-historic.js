@@ -136,9 +136,37 @@ function studentType(enrollmentCode, admissionPrefix) {
 }
 
 /**
+ * Build the Zone + Segment lookups from report_config at fetch time, so every
+ * stored row already carries its derived fields.
+ *  - Zone: Branch (Eduvate) → Zone mapping; the FIRST entry per branch wins,
+ *    mirroring the UI's findZoneByBranchEduvate lookup.
+ *  - Segment: ICSE when Branch AND Grade both match a historic_icse_config
+ *    rule (case-insensitive), else OIS.
+ */
+function buildLookups(mappingValue, icseValue) {
+  const zoneByBranch = new Map();
+  if (Array.isArray(mappingValue)) {
+    for (const m of mappingValue) {
+      const key = String(m?.branchEduvate ?? "").trim().toLowerCase();
+      if (!key || zoneByBranch.has(key)) continue;
+      zoneByBranch.set(key, String(m?.zone ?? "").trim());
+    }
+  }
+  const icse = new Set();
+  if (Array.isArray(icseValue)) {
+    for (const r of icseValue) {
+      const b = String(r?.branch ?? "").trim().toLowerCase();
+      const g = String(r?.grade ?? "").trim().toLowerCase();
+      if (b && g) icse.add(`${b}|${g}`);
+    }
+  }
+  return { zoneByBranch, icse };
+}
+
+/**
  * Core transform: CSV text → first-payment-per-ERP rows (stamped with fetchedAt).
  */
-function buildPaymentRows(csvText, fetchedAt, sessionYear, admissionPrefix) {
+function buildPaymentRows(csvText, fetchedAt, sessionYear, admissionPrefix, zoneByBranch, icse) {
   const raw = parseCsv(csvText);
   if (raw.length < 2) return { rows: [], excludedBranches: 0, totalDataRows: 0 };
 
@@ -181,6 +209,7 @@ function buildPaymentRows(csvText, fetchedAt, sessionYear, admissionPrefix) {
     const key = k.enrollment_code.toLowerCase();
     if (seen.has(key)) continue;
     seen.add(key);
+    const branchKey = k.branch.trim().toLowerCase();
     rows.push({
       branch: k.branch,
       enrollment_code: k.enrollment_code,
@@ -189,6 +218,8 @@ function buildPaymentRows(csvText, fetchedAt, sessionYear, admissionPrefix) {
       first_paid_date: k.paidRaw,
       fetched_at: fetchedAt,
       session_year: sessionYear,
+      zone: zoneByBranch.get(branchKey) || "",
+      segment: icse.has(`${branchKey}|${k.grade.trim().toLowerCase()}`) ? "ICSE" : "OIS",
     });
   }
 
@@ -256,6 +287,22 @@ async function supabaseDeleteOldGeneration(supabaseUrl, serviceKey, table, fetch
     const body = await res.text();
     throw new Error(`Supabase delete-old-rows ${table} failed: ${res.status} ${body.slice(0, 200)}`);
   }
+}
+
+/** Read one report_config value by key (Zone mapping + ICSE rules for the transform). */
+async function supabaseFetchConfig(supabaseUrl, serviceKey, configKey) {
+  const res = await fetch(
+    `${supabaseUrl}/rest/v1/report_config?config_key=eq.${encodeURIComponent(configKey)}&select=value`,
+    { headers: { apikey: serviceKey, Authorization: `Bearer ${serviceKey}` } }
+  );
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new Error(
+      `Supabase report_config(${configKey}) read failed: ${res.status} ${body.slice(0, 200)}`
+    );
+  }
+  const data = await res.json().catch(() => []);
+  return Array.isArray(data) ? data[0]?.value ?? null : null;
 }
 
 async function supabaseFetchLogUpsert(supabaseUrl, serviceKey, entry) {
@@ -345,15 +392,26 @@ export default async function handler(req, res) {
       );
     }
 
+    // Resolve Zone + Segment up-front so every stored row carries them.
+    const [mappingValue, icseValue] = await Promise.all([
+      supabaseFetchConfig(supabaseUrl, serviceKey, "grn_branch_zbh_mapping"),
+      supabaseFetchConfig(supabaseUrl, serviceKey, "historic_icse_config"),
+    ]);
+    const { zoneByBranch, icse } = buildLookups(mappingValue, icseValue);
+
     const token = await eduvateLogin(username, password);
     const csv = await downloadStoreCsv(token, session.eduvateId, reportDate);
     const { rows, excludedBranches, totalDataRows } = buildPaymentRows(
       csv,
       fetchedAt,
       sessionYear,
-      session.admissionPrefix
+      session.admissionPrefix,
+      zoneByBranch,
+      icse
     );
-    const insertRows = hasYearColumn ? rows : rows.map(({ session_year, ...r }) => r);
+    const insertRows = hasYearColumn
+      ? rows
+      : rows.map(({ session_year, zone, segment, ...r }) => r);
 
     // Refuse to wipe the snapshot with an empty transform (bad CSV, schema drift…).
     if (rows.length === 0) {

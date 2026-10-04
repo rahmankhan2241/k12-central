@@ -46,6 +46,10 @@ export type PaymentReportRow = {
   student_type: string;
   first_paid_date: string;
   fetched_at: string;
+  /** Derived at fetch time and stored; older rows may be null. */
+  session_year?: string;
+  zone?: string | null;
+  segment?: string | null;
 };
 
 /** Case-insensitive trimmed lookup: Branch (Eduvate) -> mapping row. */

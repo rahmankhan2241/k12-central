@@ -220,13 +220,19 @@ export default function HistoricReportPage() {
   // fetch pipeline is disabled for them (it only ever runs for 2026-27).
   const frozen = isFrozenYear(selectedYear);
 
-  // Zone per branch (Branch (Eduvate) lookup in the Branch & ZBH Mapping).
-  // In-progress typing in the unmapped card deliberately does NOT count here —
-  // otherwise the row would vanish mid-typing. Only saved mapping rows matter.
+  // Zone per branch. The stored value (resolved by the fetch pipeline) is
+  // authoritative; rows fetched before the zone column existed fall back to the
+  // live Branch (Eduvate) lookup in the Branch & ZBH Mapping. In-progress typing
+  // in the unmapped card deliberately does NOT count — only saved mappings do.
   const zoneByBranch = useMemo(() => {
     const map = new Map<string, string>();
     for (const r of rows) {
       if (map.has(r.branch)) continue;
+      const stored = (r.zone ?? "").trim();
+      if (stored) {
+        map.set(r.branch, stored);
+        continue;
+      }
       const m = findZoneByBranchEduvate(mapping, r.branch);
       map.set(r.branch, m ? m.zone || "(No zone)" : "");
     }
@@ -248,8 +254,10 @@ export default function HistoricReportPage() {
       rows.map((r) => ({
         ...r,
         zone: zoneByBranch.get(r.branch) || "(Unmapped)",
-        // ICSE when Branch Name + Grade match a rule in Settings → ICSE Configuration, else OIS.
-        segment: isIcse(r.branch, r.grade) ? "ICSE" : "OIS",
+        // Segment is stored at fetch time; rows fetched before the column fall
+        // back to the live ICSE rules (Settings → ICSE Configuration), else OIS.
+        segment:
+          (r.segment ?? "").trim() || (isIcse(r.branch, r.grade) ? "ICSE" : "OIS"),
       })),
     [rows, zoneByBranch, isIcse]
   );
@@ -540,7 +548,7 @@ export default function HistoricReportPage() {
               {logsLoading
                 ? "Checking fetch history…"
                 : frozen
-                  ? `Closed session — permanently saved. Its data never changes and is never re-fetched; Fetch Now refreshes 2026-27 only.${
+                  ? `Closed session — permanently saved. Its data never changes and is never re-fetched; Fetch Latest Report refreshes 2026-27 only.${
                       log?.last_fetched_at ? ` Archived ${timeAgo(log.last_fetched_at)}.` : ""
                     }`
                   : log
@@ -567,7 +575,7 @@ export default function HistoricReportPage() {
             <span className={fetching ? "spin" : ""} style={{ display: "inline-flex" }}>
               <RefreshIcon size={14} />
             </span>
-            {fetching ? "Running pipeline…" : `Fetch Now (${LIVE_YEAR})`}
+            {fetching ? "Running pipeline…" : `Fetch Latest Report (${LIVE_YEAR})`}
           </button>
         </div>
       </div>
