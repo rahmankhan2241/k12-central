@@ -10,7 +10,7 @@ import DateMultiSelect, {
   type DateSelection,
 } from "../components/DateMultiSelect";
 import { findZoneByBranchEduvate } from "../types";
-import { isFrozenYear } from "../sessionYears";
+import { LIVE_YEAR, isFrozenYear } from "../sessionYears";
 import type { BranchZbhMapping } from "../types";
 import { exportPaymentExcel } from "../exportPaymentExcel";
 import type { PaymentExportRow } from "../exportPaymentExcel";
@@ -349,11 +349,14 @@ export default function HistoricReportPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enriched, branch.join("|"), segment.join("|"), grade.join("|")]);
 
+  // Fetch Now ALWAYS refreshes the LIVE session (2026-27) and never touches the
+  // closed years (2024-25 / 2025-26), whose snapshots are permanent. It also
+  // switches the view to 2026-27 so the freshly fetched rows are visible —
+  // regardless of which year was selected when the button was clicked.
   const handleFetchNow = async () => {
-    // Frozen years are read-only — nothing to re-fetch.
-    if (isFrozenYear(selectedYear)) return;
+    if (selectedYear !== LIVE_YEAR) setSelectedYear(LIVE_YEAR);
     try {
-      await fetchNow("payment", selectedYear);
+      await fetchNow("payment", LIVE_YEAR);
     } catch {
       // surfaced via fetchError
     }
@@ -537,7 +540,7 @@ export default function HistoricReportPage() {
               {logsLoading
                 ? "Checking fetch history…"
                 : frozen
-                  ? `Closed session — permanently saved. Its data never changes, so it is never re-fetched (the pipeline runs only for 2026-27).${
+                  ? `Closed session — permanently saved. Its data never changes and is never re-fetched; Fetch Now refreshes 2026-27 only.${
                       log?.last_fetched_at ? ` Archived ${timeAgo(log.last_fetched_at)}.` : ""
                     }`
                   : log
@@ -558,17 +561,13 @@ export default function HistoricReportPage() {
           <button
             className="btn primary"
             onClick={handleFetchNow}
-            disabled={fetching || frozen}
-            title={
-              frozen
-                ? "This closed session is permanently saved — its data never changes, so there is nothing to re-fetch."
-                : "Runs the whole pipeline for the selected year: downloads from Eduvate, filters and dedupes, writes to Supabase, then refreshes this page"
-            }
+            disabled={fetching}
+            title={`Downloads the latest ${LIVE_YEAR} (current session) data from Eduvate, filters and dedupes it, and writes it to Supabase. The closed years 2024-25 and 2025-26 are permanent and are never touched.`}
           >
             <span className={fetching ? "spin" : ""} style={{ display: "inline-flex" }}>
-              {frozen ? <CheckCircleIcon size={14} /> : <RefreshIcon size={14} />}
+              <RefreshIcon size={14} />
             </span>
-            {frozen ? "Permanently saved" : fetching ? "Running pipeline…" : "Fetch Now"}
+            {fetching ? "Running pipeline…" : `Fetch Now (${LIVE_YEAR})`}
           </button>
         </div>
       </div>
