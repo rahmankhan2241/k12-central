@@ -2,14 +2,16 @@ import { useState } from "react";
 import ColumnMappingCard from "../components/ColumnMappingCard";
 import BranchZbhCard from "../components/BranchZbhCard";
 import IcseConfigCard from "../components/IcseConfigCard";
+import LoginPasswordCard from "../components/LoginPasswordCard";
 import { useReportConfig } from "../useReportConfig";
-import { ClockIcon, GearIcon } from "../icons";
+import { ClockIcon, GearIcon, LockIcon } from "../icons";
 
-type SectionId = "pending-grn" | "historic" | "future";
+type SectionId = "pending-grn" | "historic" | "access" | "future";
 
 const SECTIONS: { id: SectionId; label: string; available: boolean }[] = [
   { id: "pending-grn", label: "Pending GRN Related", available: true },
   { id: "historic", label: "Historic Report Related", available: true },
+  { id: "access", label: "Access & Security", available: true },
   { id: "future", label: "More sections (coming soon)", available: false },
 ];
 
@@ -47,7 +49,15 @@ export default function SettingsPage() {
               onClick={() => s.available && setSection(s.id)}
               disabled={!s.available}
             >
-              {s.available ? <GearIcon size={15} /> : <ClockIcon size={15} />}
+              {s.available ? (
+                s.id === "access" ? (
+                  <LockIcon size={15} />
+                ) : (
+                  <GearIcon size={15} />
+                )
+              ) : (
+                <ClockIcon size={15} />
+              )}
               {s.label}
             </button>
           ))}
@@ -66,6 +76,7 @@ export default function SettingsPage() {
             </>
           )}
           {section === "historic" && <IcseConfigCard />}
+          {section === "access" && <LoginPasswordCard />}
           {section === "future" && (
             <div className="card">
               <div className="placeholder">

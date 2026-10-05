@@ -8,6 +8,8 @@ import PoPage from "./pages/PoPage";
 import SettingsPage from "./pages/SettingsPage";
 import PlaceholderPage from "./pages/PlaceholderPage";
 import { HistoricProvider, useHistoricGlobal } from "./useHistoricFetch";
+import { AppAuthProvider } from "./useAppAuth";
+import LoginGate from "./components/LoginGate";
 import { K12Logo, MenuIcon } from "./icons";
 
 const PAGE_TITLES: Record<string, string> = {
@@ -111,8 +113,13 @@ function Shell() {
 
 export default function App() {
   return (
-    <HistoricProvider>
-      <Shell />
-    </HistoricProvider>
+    <AppAuthProvider>
+      {/* Nothing — not even data loading — happens before the password is entered. */}
+      <LoginGate>
+        <HistoricProvider>
+          <Shell />
+        </HistoricProvider>
+      </LoginGate>
+    </AppAuthProvider>
   );
 }

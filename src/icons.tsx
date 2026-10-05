@@ -114,6 +114,13 @@ export const GearIcon = ({ size = 18, style }: IconProps) => (
   </svg>
 );
 
+export const LockIcon = ({ size = 16, style }: IconProps) => (
+  <svg {...base(size)} style={style}>
+    <rect x="3" y="11" width="18" height="11" rx="2" />
+    <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+  </svg>
+);
+
 export const PlusIcon = ({ size = 15, style }: IconProps) => (
   <svg {...base(size)} style={style}>
     <line x1="12" y1="5" x2="12" y2="19" />
