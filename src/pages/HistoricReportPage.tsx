@@ -2,6 +2,7 @@ import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { useBranchZbhMapping } from "../useBranchZbhMapping";
 import { useIcseConfig } from "../useIcseConfig";
 import { useHistoricGlobal } from "../useHistoricFetch";
+import { useAuth } from "../useAuth";
 import MultiSelect from "../components/MultiSelect";
 import DateMultiSelect, {
   dateLabel,
@@ -195,6 +196,10 @@ export default function HistoricReportPage() {
     setSelectedYear,
     needsMigration,
   } = useHistoricGlobal();
+  // Only the admin account may run the Eduvate fetch pipeline. Everyone else
+  // gets the report read-only: view and filter, but no Fetch option.
+  const { session: authSession } = useAuth();
+  const canFetch = authSession?.isAdmin === true;
   const { rows: mapping, setRows: setMappingRows, status: mappingStatus } = useBranchZbhMapping();
   const { isIcse } = useIcseConfig();
 
@@ -362,6 +367,7 @@ export default function HistoricReportPage() {
   // switches the view to 2026-27 so the freshly fetched rows are visible —
   // regardless of which year was selected when the button was clicked.
   const handleFetchNow = async () => {
+    if (!canFetch) return;
     if (selectedYear !== LIVE_YEAR) setSelectedYear(LIVE_YEAR);
     try {
       await fetchNow("payment", LIVE_YEAR);
@@ -548,16 +554,20 @@ export default function HistoricReportPage() {
               {logsLoading
                 ? "Checking fetch history…"
                 : frozen
-                  ? `Closed session — permanently saved. Its data never changes and is never re-fetched; Fetch Latest Report refreshes 2026-27 only.${
+                  ? `Closed session — permanently saved. Its data never changes${
+                      canFetch ? " and is never re-fetched; Fetch Latest Report refreshes 2026-27 only" : ""
+                    }.${
                       log?.last_fetched_at ? ` Archived ${timeAgo(log.last_fetched_at)}.` : ""
                     }`
                   : log
                     ? `Last fetched ${timeAgo(log.last_fetched_at)} (${fmtDateTime(log.last_fetched_at)})${
                         log.last_report_date ? ` · data till ${log.last_report_date}` : ""
                       }`
-                    : selectedYear === "2026-27"
-                      ? "Never fetched yet — click Fetch Now to pull it from Eduvate."
-                      : "Never fetched for this year — click Fetch Now (takes 30–60s)."}
+                    : canFetch
+                      ? selectedYear === "2026-27"
+                        ? "Never fetched yet — click Fetch Now to pull it from Eduvate."
+                        : "Never fetched for this year — click Fetch Now (takes 30–60s)."
+                      : "No data has been fetched for this year yet."}
               {log?.last_status === "failed" && log?.last_error && (
                 <span className="fetch-err"> · {log.last_error}</span>
               )}
@@ -566,17 +576,19 @@ export default function HistoricReportPage() {
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <YearDropdown years={ACADEMIC_YEARS} value={selectedYear} onChange={setSelectedYear} />
-          <button
-            className="btn primary"
-            onClick={handleFetchNow}
-            disabled={fetching}
-            title={`Downloads the latest ${LIVE_YEAR} (current session) data from Eduvate, filters and dedupes it, and writes it to Supabase. The closed years 2024-25 and 2025-26 are permanent and are never touched.`}
-          >
-            <span className={fetching ? "spin" : ""} style={{ display: "inline-flex" }}>
-              <RefreshIcon size={14} />
-            </span>
-            {fetching ? "Running pipeline…" : `Fetch Latest Report (${LIVE_YEAR})`}
-          </button>
+          {canFetch && (
+            <button
+              className="btn primary"
+              onClick={handleFetchNow}
+              disabled={fetching}
+              title={`Downloads the latest ${LIVE_YEAR} (current session) data from Eduvate, filters and dedupes it, and writes it to Supabase. The closed years 2024-25 and 2025-26 are permanent and are never touched.`}
+            >
+              <span className={fetching ? "spin" : ""} style={{ display: "inline-flex" }}>
+                <RefreshIcon size={14} />
+              </span>
+              {fetching ? "Running pipeline…" : `Fetch Latest Report (${LIVE_YEAR})`}
+            </button>
+          )}
         </div>
       </div>
 
@@ -593,9 +605,11 @@ export default function HistoricReportPage() {
         <div className="upload-error">
           <AlertIcon size={14} />
           Fetch failed: {fetchError}
-          <button className="link-btn" onClick={handleFetchNow}>
-            Retry
-          </button>
+          {canFetch && (
+            <button className="link-btn" onClick={handleFetchNow}>
+              Retry
+            </button>
+          )}
         </div>
       )}
 
