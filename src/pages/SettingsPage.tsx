@@ -2,7 +2,7 @@ import { useState } from "react";
 import ColumnMappingCard from "../components/ColumnMappingCard";
 import BranchZbhCard from "../components/BranchZbhCard";
 import IcseConfigCard from "../components/IcseConfigCard";
-import LoginPasswordCard from "../components/LoginPasswordCard";
+import UsersCard from "../components/UsersCard";
 import { useReportConfig } from "../useReportConfig";
 import { ClockIcon, GearIcon, LockIcon } from "../icons";
 
@@ -76,7 +76,7 @@ export default function SettingsPage() {
             </>
           )}
           {section === "historic" && <IcseConfigCard />}
-          {section === "access" && <LoginPasswordCard />}
+          {section === "access" && <UsersCard />}
           {section === "future" && (
             <div className="card">
               <div className="placeholder">

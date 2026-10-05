@@ -13,6 +13,8 @@ type SidebarProps = {
   collapsed: boolean;
   activePage: string;
   onNavigate: (id: string) => void;
+  /** Hides entries the signed-in account isn't allowed to open. */
+  canAccess: (id: string) => boolean;
 };
 
 const NAV_SECTIONS: { label: string; items: NavItem[] }[] = [
@@ -66,20 +68,26 @@ const NAV_SECTIONS: { label: string; items: NavItem[] }[] = [
   },
 ];
 
-export default function Sidebar({ collapsed, activePage, onNavigate }: SidebarProps) {
+export default function Sidebar({ collapsed, activePage, onNavigate, canAccess }: SidebarProps) {
   const [query, setQuery] = useState("");
 
   const filteredSections = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    if (!q) return NAV_SECTIONS;
-    return NAV_SECTIONS.map((section) => ({
+    const permitted = NAV_SECTIONS.map((section) => ({
       ...section,
-      items: section.items.filter((item) => {
-        const haystack = [item.label, ...(item.keywords ?? [])].join(" ").toLowerCase();
-        return q.split(/\s+/).every((word) => haystack.includes(word));
-      }),
+      items: section.items.filter((item) => canAccess(item.id)),
     })).filter((section) => section.items.length > 0);
-  }, [query]);
+    const q = query.trim().toLowerCase();
+    if (!q) return permitted;
+    return permitted
+      .map((section) => ({
+        ...section,
+        items: section.items.filter((item) => {
+          const haystack = [item.label, ...(item.keywords ?? [])].join(" ").toLowerCase();
+          return q.split(/\s+/).every((word) => haystack.includes(word));
+        }),
+      }))
+      .filter((section) => section.items.length > 0);
+  }, [query, canAccess]);
 
   return (
     <aside className={`sidebar ${collapsed ? "collapsed" : ""}`}>

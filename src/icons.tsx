@@ -141,6 +141,21 @@ export const TrashIcon = ({ size = 14, style }: IconProps) => (
   </svg>
 );
 
+export const UserIcon = ({ size = 16, style }: IconProps) => (
+  <svg {...base(size)} style={style}>
+    <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+    <circle cx="12" cy="7" r="4" />
+  </svg>
+);
+
+export const LogoutIcon = ({ size = 16, style }: IconProps) => (
+  <svg {...base(size)} style={style}>
+    <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+    <polyline points="16 17 21 12 16 7" />
+    <line x1="21" y1="12" x2="9" y2="12" />
+  </svg>
+);
+
 export const AlertIcon = ({ size = 16, style }: IconProps) => (
   <svg {...base(size)} style={style}>
     <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
