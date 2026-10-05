@@ -5,6 +5,7 @@ import {
   appendPoRows,
   replacePoRows,
   updatePoRow,
+  deletePoRow,
   type PoRow,
 } from "../poRows";
 import MultiSelect from "../components/MultiSelect";
@@ -16,6 +17,7 @@ import {
   FileReportIcon,
   PencilIcon,
   SearchIcon,
+  TrashIcon,
   UploadIcon,
 } from "../icons";
 
@@ -80,6 +82,11 @@ export default function PoPage() {
   const [editConfirm, setEditConfirm] = useState(false); // confirmation before applying
   const [savingEdit, setSavingEdit] = useState(false);
   const [rowError, setRowError] = useState<string | null>(null);
+
+  // Delete flow: pick row → confirmation → permanent delete in Supabase
+  const [deleteId, setDeleteId] = useState<number | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [rowNotice, setRowNotice] = useState<string | null>(null);
 
   useEffect(() => {
     let alive = true;
@@ -219,6 +226,7 @@ export default function PoPage() {
   // ------------------------------------------------------------------
   const startEdit = (r: PoRow) => {
     setRowError(null);
+    setRowNotice(null);
     setEditId(r.id);
     setEditDraft({
       po_date: r.po_date,
@@ -254,6 +262,27 @@ export default function PoPage() {
     }
   };
 
+  // ------------------------------------------------------------------
+  // Delete flow: click trash → confirmation → permanent delete in Supabase
+  // ------------------------------------------------------------------
+  const confirmDeleteRow = async () => {
+    if (deleteId == null) return;
+    setDeleting(true);
+    setRowError(null);
+    setRowNotice(null);
+    try {
+      await deletePoRow(deleteId);
+      setRows((rs) => rs.filter((r) => r.id !== deleteId));
+      setRowNotice("PO row deleted permanently from the database.");
+      setDeleteId(null);
+    } catch (e) {
+      setRowError(e instanceof Error ? e.message : String(e));
+      setDeleteId(null);
+    } finally {
+      setDeleting(false);
+    }
+  };
+
   const exportCsv = () => {
     const header = COLUMNS.map((c) => c.label).join(",");
     const lines = filtered.map((r) =>
@@ -280,6 +309,7 @@ export default function PoPage() {
   };
 
   const hasTable = rows.length > 0;
+  const deleteRow = deleteId == null ? null : rows.find((r) => r.id === deleteId) ?? null;
 
   return (
     <div className="po-page">
@@ -525,6 +555,64 @@ export default function PoPage() {
         </div>
       )}
 
+      {/* ------------------------------------------------ Delete confirmation */}
+      {deleteId != null && (
+        <div
+          className="modal-backdrop"
+          onMouseDown={(e) => e.target === e.currentTarget && !deleting && setDeleteId(null)}
+        >
+          <div className="modal" role="dialog" aria-modal="true" aria-label="Confirm delete">
+            <div className="modal-head">
+              <h3>
+                <AlertIcon size={16} />
+                Delete this row permanently?
+              </h3>
+              <button
+                className="modal-close"
+                onClick={() => setDeleteId(null)}
+                aria-label="Cancel delete"
+                disabled={deleting}
+              >
+                <CloseIcon size={15} />
+              </button>
+            </div>
+            <div className="modal-body">
+              <p className="param-note" style={{ margin: 0 }}>
+                This removes the row from the database for everyone. It cannot be undone.
+              </p>
+              {deleteRow && (
+                <table className="po-edit-diff">
+                  <tbody>
+                    {COLUMNS.map((c) => (
+                      <tr key={String(c.key)}>
+                        <td>{c.label}</td>
+                        <td>
+                          {c.key === "existing_stock" || c.key === "po_qty"
+                            ? fmtNum(Number(deleteRow[c.key] ?? 0))
+                            : String(deleteRow[c.key] ?? "") || "—"}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+              <div className="po-warn-actions">
+                <button className="btn" onClick={() => setDeleteId(null)} disabled={deleting}>
+                  Cancel
+                </button>
+                <button
+                  className="btn danger"
+                  onClick={() => void confirmDeleteRow()}
+                  disabled={deleting}
+                >
+                  {deleting ? "Deleting…" : "Yes, delete permanently"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ------------------------------------------------ Toolbar: search + category + export */}
       <div className="table-toolbar po-toolbar">
         <div className="filters" style={{ flexWrap: "wrap", gap: 8 }}>
@@ -570,7 +658,7 @@ export default function PoPage() {
               {COLUMNS.map((c) => (
                 <th key={String(c.key)}>{c.label}</th>
               ))}
-              <th style={{ width: 70 }} />
+              <th style={{ width: 100 }} />
             </tr>
           </thead>
           <tbody>
@@ -614,13 +702,26 @@ export default function PoPage() {
                           Save
                         </button>
                       ) : (
-                        <button
-                          className="btn po-row-btn"
-                          onClick={() => startEdit(r)}
-                          title="Edit this row (confirmation required before saving)"
-                        >
-                          <PencilIcon size={13} />
-                        </button>
+                        <div className="po-row-actions">
+                          <button
+                            className="btn po-row-btn"
+                            onClick={() => startEdit(r)}
+                            title="Edit this row (confirmation required before saving)"
+                          >
+                            <PencilIcon size={13} />
+                          </button>
+                          <button
+                            className="btn danger po-row-btn"
+                            onClick={() => {
+                              setRowError(null);
+                              setRowNotice(null);
+                              setDeleteId(r.id);
+                            }}
+                            title="Delete this row permanently from the database"
+                          >
+                            <TrashIcon size={13} />
+                          </button>
+                        </div>
                       )}
                     </td>
                   </tr>
@@ -655,6 +756,13 @@ export default function PoPage() {
         )}
       </div>
 
+      {rowNotice && (
+        <div className="upload-success">
+          <CheckCircleIcon size={14} />
+          {rowNotice}
+        </div>
+      )}
+
       {rowError && (
         <div className="upload-error">
           <AlertIcon size={14} />
@@ -663,7 +771,7 @@ export default function PoPage() {
       )}
 
       <div className="historic-footnote">
-        Upload replaces or appends PO rows · edit any row with confirmation · {rows.length === 0 && "run scripts/migration-po-rows.sql in Supabase if the table is missing."}
+        Upload replaces or appends PO rows · edit or delete any row with confirmation · {rows.length === 0 && "run scripts/migration-po-rows.sql in Supabase if the table is missing."}
       </div>
     </div>
   );

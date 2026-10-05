@@ -1994,6 +1994,11 @@ button.sync-pill.failed:hover {
   padding: 5px 9px;
   font-size: 12px;
 }
+.po-row-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
 .po-editing td {
   background: var(--blue-50);
 }
