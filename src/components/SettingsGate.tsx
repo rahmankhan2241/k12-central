@@ -8,22 +8,25 @@ const COOLDOWN_SECONDS = 5;
 const ATTEMPTS_BEFORE_COOLDOWN = 3;
 
 /**
- * Blocks the console until the shared access password is entered.
- * Renders its children only when signed in.
+ * Blocks ONLY the Settings page until the shared password is entered.
+ *
+ * The unlocked state is plain component state, and this component unmounts as
+ * soon as the user leaves Settings — so every visit asks for the password
+ * again. Nothing about an unlock is stored anywhere.
  */
-export default function LoginGate({ children }: { children: ReactNode }) {
-  const { ready, authed, submitPassword } = useAppAuth();
+export default function SettingsGate({ children }: { children: ReactNode }) {
+  const { ready, password } = useAppAuth();
+  const [unlocked, setUnlocked] = useState(false);
   const [value, setValue] = useState("");
   const [show, setShow] = useState(false);
-  const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [attempts, setAttempts] = useState(0);
   const [cooldown, setCooldown] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    if (ready && !authed) inputRef.current?.focus();
-  }, [ready, authed]);
+    if (ready && !unlocked) inputRef.current?.focus();
+  }, [ready, unlocked]);
 
   useEffect(() => {
     if (cooldown <= 0) return;
@@ -35,47 +38,43 @@ export default function LoginGate({ children }: { children: ReactNode }) {
 
   if (!ready) {
     return (
-      <div className="login-screen">
+      <div className="settings-gate">
         <span className="spinner" aria-hidden="true" />
       </div>
     );
   }
 
-  if (authed) return <>{children}</>;
+  if (unlocked) return <>{children}</>;
 
-  const locked = busy || cooldown > 0;
+  const locked = cooldown > 0;
 
-  const submit = async (event: FormEvent) => {
+  const submit = (event: FormEvent) => {
     event.preventDefault();
     if (locked) return;
-    const entered = value;
-    if (!entered) {
+    if (!value) {
       setError("Enter the access password.");
       return;
     }
-    setBusy(true);
-    setError(null);
-    const ok = await submitPassword(entered);
-    setBusy(false);
-    if (ok) {
+    if (value !== password) {
+      const nextAttempts = attempts + 1;
+      setAttempts(nextAttempts);
       setValue("");
-      setAttempts(0);
+      inputRef.current?.focus();
+      if (nextAttempts % ATTEMPTS_BEFORE_COOLDOWN === 0) {
+        setCooldown(COOLDOWN_SECONDS);
+        setError(`Wrong password. Too many attempts — wait ${COOLDOWN_SECONDS}s and try again.`);
+      } else {
+        setError("Wrong password. Check it and try again.");
+      }
       return;
     }
-    const nextAttempts = attempts + 1;
-    setAttempts(nextAttempts);
     setValue("");
-    inputRef.current?.focus();
-    if (nextAttempts % ATTEMPTS_BEFORE_COOLDOWN === 0) {
-      setCooldown(COOLDOWN_SECONDS);
-      setError(`Wrong password. Too many attempts — wait ${COOLDOWN_SECONDS}s and try again.`);
-    } else {
-      setError("Wrong password. Check it and try again.");
-    }
+    setError(null);
+    setUnlocked(true);
   };
 
   return (
-    <div className="login-screen">
+    <div className="settings-gate">
       <form className="login-card" onSubmit={submit}>
         <div className="login-brand">
           <K12Logo size={46} />
@@ -87,25 +86,25 @@ export default function LoginGate({ children }: { children: ReactNode }) {
 
         <div className="login-badge">
           <LockIcon size={14} />
-          Restricted access
+          Settings locked
         </div>
         <h1 className="login-title">Enter the access password</h1>
         <p className="login-sub">
-          This console is private. Only people with the shared password can open it — ask the admin if
-          you don&apos;t have it.
+          Settings is protected and asks for the password every time it is opened. The rest of the
+          console stays open to everyone — use the menu on the left to go back.
         </p>
 
-        <label className="login-label" htmlFor="k12-login-password">
+        <label className="login-label" htmlFor="k12-settings-password">
           Password
         </label>
         <div className="login-input-row">
           <input
-            id="k12-login-password"
+            id="k12-settings-password"
             ref={inputRef}
             className="login-input"
             type={show ? "text" : "password"}
             value={value}
-            autoComplete="current-password"
+            autoComplete="off"
             placeholder="Access password"
             disabled={locked}
             onChange={(e) => {
@@ -132,11 +131,11 @@ export default function LoginGate({ children }: { children: ReactNode }) {
         )}
 
         <button className="btn primary login-submit" type="submit" disabled={locked || !value}>
-          {busy ? "Checking…" : cooldown > 0 ? `Wait ${cooldown}s` : "Open console"}
+          {cooldown > 0 ? `Wait ${cooldown}s` : "Unlock settings"}
         </button>
 
         <div className="login-foot">
-          The password can be changed in Settings → Access &amp; Security after signing in.
+          The password can be changed in Settings → Access &amp; Security after unlocking.
         </div>
       </form>
     </div>

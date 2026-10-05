@@ -9,7 +9,7 @@ import SettingsPage from "./pages/SettingsPage";
 import PlaceholderPage from "./pages/PlaceholderPage";
 import { HistoricProvider, useHistoricGlobal } from "./useHistoricFetch";
 import { AppAuthProvider } from "./useAppAuth";
-import LoginGate from "./components/LoginGate";
+import SettingsGate from "./components/SettingsGate";
 import { K12Logo, MenuIcon } from "./icons";
 
 const PAGE_TITLES: Record<string, string> = {
@@ -94,7 +94,11 @@ function Shell() {
             )}
             {activePage === "historic-report" && <HistoricReportPage />}
             {activePage === "po-tracking" && <PoPage />}
-            {activePage === "settings" && <SettingsPage />}
+            {activePage === "settings" && (
+              <SettingsGate>
+                <SettingsPage />
+              </SettingsGate>
+            )}
             {activePage !== "home" &&
               activePage !== "pending-grn" &&
               activePage !== "historic-report" &&
@@ -114,12 +118,10 @@ function Shell() {
 export default function App() {
   return (
     <AppAuthProvider>
-      {/* Nothing — not even data loading — happens before the password is entered. */}
-      <LoginGate>
-        <HistoricProvider>
-          <Shell />
-        </HistoricProvider>
-      </LoginGate>
+      {/* Everyone can open the console; only Settings is password-protected. */}
+      <HistoricProvider>
+        <Shell />
+      </HistoricProvider>
     </AppAuthProvider>
   );
 }

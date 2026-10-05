@@ -2767,20 +2767,13 @@ button.sync-pill.failed:hover {
   }
 }
 
-/* ---------- Login gate ---------- */
-.login-screen {
-  position: fixed;
-  inset: 0;
-  z-index: 200;
+/* ---------- Settings password gate ---------- */
+.settings-gate {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: center;
-  padding: 24px;
-  overflow: auto;
-  background:
-    radial-gradient(1100px 520px at 12% -10%, #1c3f72 0%, transparent 60%),
-    radial-gradient(900px 460px at 105% 110%, #16345d 0%, transparent 55%),
-    linear-gradient(160deg, #0b1f3a 0%, #12325e 58%, #0e2748 100%);
+  min-height: 60vh;
+  padding: 42px 24px 60px;
 }
 
 .login-card {
@@ -2937,20 +2930,6 @@ button.sync-pill.failed:hover {
 
 .password-change-grid {
   grid-template-columns: 1fr 1fr auto;
-}
-
-.password-lock-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding-top: 12px;
-  border-top: 1px solid var(--line-soft);
-}
-
-.password-lock-text {
-  font-size: 12.5px;
-  color: var(--ink-soft);
 }
 
 @media (max-width: 700px) {

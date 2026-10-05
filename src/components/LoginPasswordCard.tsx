@@ -4,12 +4,11 @@ import { AlertIcon, CheckCircleIcon, LockIcon } from "../icons";
 
 /**
  * Settings → Access & Security.
- * Shows the shared access password (hidden by default) and lets you change it.
- * Everyone you authorize signs in with this same password; changing it signs
- * other devices out the next time they load the app.
+ * Shows the Settings password (hidden by default) and lets you change it. The
+ * same password is asked every time someone opens Settings.
  */
 export default function LoginPasswordCard() {
-  const { password, changePassword, lockNow, saveStatus, retrySave } = useAppAuth();
+  const { password, changePassword, saveStatus, retrySave } = useAppAuth();
   const [reveal, setReveal] = useState(false);
   const [newPassword, setNewPassword] = useState("");
   const [confirm, setConfirm] = useState("");
@@ -53,13 +52,14 @@ export default function LoginPasswordCard() {
           <LockIcon size={16} />
           Login Password
         </div>
-        <span className="row-count">whole console{statusLabel}</span>
+        <span className="row-count">Settings only{statusLabel}</span>
       </div>
       <div className="card-body" style={{ display: "flex", flexDirection: "column", gap: 14 }}>
         <p className="drawer-hint">
-          Every page of K12 Central sits behind this one password. People you authorize use the same
-          password as you — there are no separate accounts. It is stored in the K12 Central database, so
-          changing it here applies everywhere without a redeploy.
+          This password protects Settings and is asked again every time Settings is opened. People you
+          authorize use the same password as you — there are no separate accounts. It is stored in the
+          K12 Central database, so changing it here applies everywhere without a redeploy. The rest of the
+          console stays open to everyone.
         </p>
 
         <div className="password-current">
@@ -126,19 +126,9 @@ export default function LoginPasswordCard() {
           </div>
         )}
 
-        <div className="password-lock-row">
-          <div className="password-lock-text">
-            Lock this device now — you will need the password again to open the console.
-          </div>
-          <button className="btn danger" onClick={lockNow}>
-            <LockIcon size={14} />
-            Lock now
-          </button>
-        </div>
-
         <div className="historic-footnote">
           <LockIcon size={13} />
-          Soft gate: the browser checks the password before loading app data — keep the Supabase key
+          Soft gate: the browser checks the password before loading Settings — keep the Supabase key
           private if the data itself must stay secret.
         </div>
       </div>
