@@ -1999,6 +1999,64 @@ button.sync-pill.failed:hover {
   align-items: center;
   gap: 6px;
 }
+.po-check-cell {
+  text-align: center;
+  vertical-align: middle;
+}
+.po-check {
+  width: 15px;
+  height: 15px;
+  cursor: pointer;
+  accent-color: var(--blue-600);
+}
+.po-check:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+tbody tr.po-selected td {
+  background: var(--blue-50);
+}
+.po-selection-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin: 0 0 12px;
+  padding: 9px 14px;
+  border: 1px solid #f3caca;
+  border-radius: 10px;
+  background: var(--red-50);
+  font-size: 13px;
+  color: var(--ink);
+}
+.po-selection-count strong {
+  font-weight: 700;
+}
+.po-selection-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.po-delete-list {
+  margin: 10px 0 0;
+  padding: 0 0 0 2px;
+  list-style: none;
+  font-size: 12.5px;
+  max-height: 180px;
+  overflow: auto;
+}
+.po-delete-list li {
+  padding: 3px 0;
+  border-bottom: 1px solid var(--line, #e6e8ee);
+}
+.po-delete-list li:last-child {
+  border-bottom: 0;
+}
+.po-delete-more {
+  color: var(--ink-soft);
+  font-style: italic;
+}
 .po-editing td {
   background: var(--blue-50);
 }

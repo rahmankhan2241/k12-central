@@ -5,7 +5,7 @@ import {
   appendPoRows,
   replacePoRows,
   updatePoRow,
-  deletePoRow,
+  deletePoRows,
   type PoRow,
 } from "../poRows";
 import MultiSelect from "../components/MultiSelect";
@@ -83,8 +83,10 @@ export default function PoPage() {
   const [savingEdit, setSavingEdit] = useState(false);
   const [rowError, setRowError] = useState<string | null>(null);
 
-  // Delete flow: pick row → confirmation → permanent delete in Supabase
-  const [deleteId, setDeleteId] = useState<number | null>(null);
+  // Delete flow: pick rows (single trash or checkbox selection) → confirmation
+  // → permanent delete in Supabase
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [deleteIds, setDeleteIds] = useState<number[] | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [rowNotice, setRowNotice] = useState<string | null>(null);
 
@@ -265,23 +267,40 @@ export default function PoPage() {
   // ------------------------------------------------------------------
   // Delete flow: click trash → confirmation → permanent delete in Supabase
   // ------------------------------------------------------------------
-  const confirmDeleteRow = async () => {
-    if (deleteId == null) return;
+  const confirmDeleteRows = async () => {
+    if (deleteIds == null || deleteIds.length === 0) return;
+    const ids = deleteIds;
     setDeleting(true);
     setRowError(null);
     setRowNotice(null);
     try {
-      await deletePoRow(deleteId);
-      setRows((rs) => rs.filter((r) => r.id !== deleteId));
-      setRowNotice("PO row deleted permanently from the database.");
-      setDeleteId(null);
+      await deletePoRows(ids);
+      const gone = new Set(ids);
+      setRows((rs) => rs.filter((r) => !gone.has(r.id)));
+      setSelected((prev) => {
+        const next = new Set(prev);
+        for (const id of ids) next.delete(id);
+        return next;
+      });
+      setRowNotice(
+        ids.length === 1
+          ? "PO row deleted permanently from the database."
+          : `${ids.length.toLocaleString("en-IN")} PO rows deleted permanently from the database.`
+      );
+      setDeleteIds(null);
     } catch (e) {
       setRowError(e instanceof Error ? e.message : String(e));
-      setDeleteId(null);
+      setDeleteIds(null);
     } finally {
       setDeleting(false);
     }
   };
+
+  // Changing the search/category view drops ticks that are no longer on screen,
+  // so a bulk delete always matches what the user sees.
+  useEffect(() => {
+    setSelected(new Set());
+  }, [search, category]);
 
   const exportCsv = () => {
     const header = COLUMNS.map((c) => c.label).join(",");
@@ -309,7 +328,35 @@ export default function PoPage() {
   };
 
   const hasTable = rows.length > 0;
-  const deleteRow = deleteId == null ? null : rows.find((r) => r.id === deleteId) ?? null;
+  const deleteRowsPreview =
+    deleteIds == null ? [] : (deleteIds.map((id) => rows.find((r) => r.id === id)).filter(Boolean) as PoRow[]);
+
+  // ---- Bulk selection: header checkbox selects every row in the current
+  // filter (including the ones beyond the first 500 that aren't rendered).
+  const allFilteredSelected = filtered.length > 0 && filtered.every((r) => selected.has(r.id));
+  const someFilteredSelected = !allFilteredSelected && filtered.some((r) => selected.has(r.id));
+
+  const toggleRow = (id: number) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const toggleAllFiltered = () => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      const allSelected = filtered.length > 0 && filtered.every((r) => prev.has(r.id));
+      if (allSelected) {
+        for (const r of filtered) next.delete(r.id);
+      } else {
+        for (const r of filtered) next.add(r.id);
+      }
+      return next;
+    });
+  };
 
   return (
     <div className="po-page">
@@ -556,20 +603,22 @@ export default function PoPage() {
       )}
 
       {/* ------------------------------------------------ Delete confirmation */}
-      {deleteId != null && (
+      {deleteIds != null && deleteIds.length > 0 && (
         <div
           className="modal-backdrop"
-          onMouseDown={(e) => e.target === e.currentTarget && !deleting && setDeleteId(null)}
+          onMouseDown={(e) => e.target === e.currentTarget && !deleting && setDeleteIds(null)}
         >
           <div className="modal" role="dialog" aria-modal="true" aria-label="Confirm delete">
             <div className="modal-head">
               <h3>
                 <AlertIcon size={16} />
-                Delete this row permanently?
+                {deleteIds.length === 1
+                  ? "Delete this row permanently?"
+                  : `Delete ${deleteIds.length.toLocaleString("en-IN")} rows permanently?`}
               </h3>
               <button
                 className="modal-close"
-                onClick={() => setDeleteId(null)}
+                onClick={() => setDeleteIds(null)}
                 aria-label="Cancel delete"
                 disabled={deleting}
               >
@@ -578,9 +627,10 @@ export default function PoPage() {
             </div>
             <div className="modal-body">
               <p className="param-note" style={{ margin: 0 }}>
-                This removes the row from the database for everyone. It cannot be undone.
+                This removes {deleteIds.length === 1 ? "the row" : "these rows"} from the database
+                for everyone. It cannot be undone.
               </p>
-              {deleteRow && (
+              {deleteIds.length === 1 && deleteRowsPreview[0] ? (
                 <table className="po-edit-diff">
                   <tbody>
                     {COLUMNS.map((c) => (
@@ -588,24 +638,42 @@ export default function PoPage() {
                         <td>{c.label}</td>
                         <td>
                           {c.key === "existing_stock" || c.key === "po_qty"
-                            ? fmtNum(Number(deleteRow[c.key] ?? 0))
-                            : String(deleteRow[c.key] ?? "") || "—"}
+                            ? fmtNum(Number(deleteRowsPreview[0][c.key] ?? 0))
+                            : String(deleteRowsPreview[0][c.key] ?? "") || "—"}
                         </td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
+              ) : (
+                <ul className="po-delete-list">
+                  {deleteRowsPreview.slice(0, 8).map((r) => (
+                    <li key={r.id}>
+                      <strong>{r.sku_code || "(no SKU)"}</strong>
+                      {r.material_name ? ` — ${r.material_name}` : ""}
+                    </li>
+                  ))}
+                  {deleteIds.length > deleteRowsPreview.slice(0, 8).length && (
+                    <li className="po-delete-more">
+                      +{deleteIds.length - deleteRowsPreview.slice(0, 8).length} more
+                    </li>
+                  )}
+                </ul>
               )}
               <div className="po-warn-actions">
-                <button className="btn" onClick={() => setDeleteId(null)} disabled={deleting}>
+                <button className="btn" onClick={() => setDeleteIds(null)} disabled={deleting}>
                   Cancel
                 </button>
                 <button
                   className="btn danger"
-                  onClick={() => void confirmDeleteRow()}
+                  onClick={() => void confirmDeleteRows()}
                   disabled={deleting}
                 >
-                  {deleting ? "Deleting…" : "Yes, delete permanently"}
+                  {deleting
+                    ? "Deleting…"
+                    : deleteIds.length === 1
+                      ? "Yes, delete permanently"
+                      : `Yes, delete ${deleteIds.length.toLocaleString("en-IN")} rows`}
                 </button>
               </div>
             </div>
@@ -649,11 +717,51 @@ export default function PoPage() {
         </div>
       </div>
 
+      {/* ------------------------------------------------ Bulk selection bar */}
+      {selected.size > 0 && (
+        <div className="po-selection-bar">
+          <span
+            className="po-selection-count"
+            title={`${selected.size.toLocaleString("en-IN")} of ${filtered.length.toLocaleString("en-IN")} rows in the current filter`}
+          >
+            <strong>{selected.size.toLocaleString("en-IN")}</strong>{" "}
+            {selected.size === 1 ? "row" : "rows"} selected
+          </span>
+          <div className="po-selection-actions">
+            <button
+              className="btn danger"
+              onClick={() => setDeleteIds([...selected])}
+              disabled={deleting}
+            >
+              <TrashIcon size={13} />
+              Delete selected
+            </button>
+            <button className="btn" onClick={() => setSelected(new Set())} disabled={deleting}>
+              Clear selection
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* ------------------------------------------------ Data table */}
       <div className="table-wrap historic-table">
         <table className="data-table">
           <thead>
             <tr>
+              <th style={{ width: 38 }} className="po-check-cell">
+                <input
+                  type="checkbox"
+                  className="po-check"
+                  checked={allFilteredSelected}
+                  ref={(el) => {
+                    if (el) el.indeterminate = someFilteredSelected;
+                  }}
+                  onChange={toggleAllFiltered}
+                  disabled={loading || filtered.length === 0}
+                  aria-label="Select all rows in the current filter"
+                  title={`Select all ${filtered.length.toLocaleString("en-IN")} row(s) in the current filter`}
+                />
+              </th>
               <th style={{ width: 44 }}>#</th>
               {COLUMNS.map((c) => (
                 <th key={String(c.key)}>{c.label}</th>
@@ -666,7 +774,19 @@ export default function PoPage() {
               filtered.slice(0, 500).map((r, i) => {
                 const editing = editId === r.id;
                 return (
-                  <tr key={r.id} className={editing ? "po-editing" : ""}>
+                  <tr
+                    key={r.id}
+                    className={`${editing ? "po-editing" : ""}${selected.has(r.id) ? " po-selected" : ""}`}
+                  >
+                    <td className="po-check-cell">
+                      <input
+                        type="checkbox"
+                        className="po-check"
+                        checked={selected.has(r.id)}
+                        onChange={() => toggleRow(r.id)}
+                        aria-label={`Select row ${i + 1} (${r.sku_code || r.material_name || "no SKU"})`}
+                      />
+                    </td>
                     <td className="mapping-idx">{i + 1}</td>
                     {COLUMNS.map((c) => (
                       <td key={String(c.key)}>
@@ -715,7 +835,7 @@ export default function PoPage() {
                             onClick={() => {
                               setRowError(null);
                               setRowNotice(null);
-                              setDeleteId(r.id);
+                              setDeleteIds([r.id]);
                             }}
                             title="Delete this row permanently from the database"
                           >
@@ -729,7 +849,7 @@ export default function PoPage() {
               })}
             {!loading && filtered.length === 0 && (
               <tr>
-                <td colSpan={9} className="table-empty">
+                <td colSpan={10} className="table-empty">
                   {rows.length === 0
                     ? "No PO data yet — upload the PO Excel above to get started."
                     : "No rows match your search."}
@@ -740,10 +860,10 @@ export default function PoPage() {
           {!loading && filtered.length > 0 && (
             <tfoot>
               <tr>
-                <td colSpan={4}>Total ({filtered.length.toLocaleString("en-IN")} rows)</td>
+                <td colSpan={7}>Total ({filtered.length.toLocaleString("en-IN")} rows)</td>
                 <td className="num">{fmtNum(totals.stock)}</td>
                 <td className="num">{fmtNum(totals.qty)}</td>
-                <td colSpan={2} />
+                <td />
               </tr>
             </tfoot>
           )}

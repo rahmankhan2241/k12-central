@@ -195,8 +195,15 @@ export async function updatePoRow(id: number, patch: Partial<PoNewRow>): Promise
   if (error) throw new Error(error.message);
 }
 
-/** Permanently remove one row from the database. This cannot be undone. */
-export async function deletePoRow(id: number): Promise<void> {
-  const { error } = await supabase.from("po_rows").delete().eq("id", id);
-  if (error) throw new Error(error.message);
+/** Permanently remove rows from the database. This cannot be undone. */
+export async function deletePoRows(ids: number[]): Promise<number> {
+  const CHUNK = 200; // keep each delete request small
+  let removed = 0;
+  for (let i = 0; i < ids.length; i += CHUNK) {
+    const batch = ids.slice(i, i + CHUNK);
+    const { error } = await supabase.from("po_rows").delete().in("id", batch);
+    if (error) throw new Error(error.message);
+    removed += batch.length;
+  }
+  return removed;
 }
