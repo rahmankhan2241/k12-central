@@ -387,11 +387,20 @@ export default function HistoricReportPage() {
     dateSel.dates.length > 0;
 
   // ---- Paid Data Format: pivot of the SAME filtered rows the ERP table shows.
-  // One row per branch: Paid Students (all ERPs), New Paid, Existing (Old) Paid.
+  // One row per branch+grade: Paid Students (all ERPs), New Paid, Existing (Old) Paid.
   const paidPivot = useMemo(() => {
     const zones = new Map<
       string,
-      Map<string, { paid: number; newPaid: number; oldPaid: number }>
+      Map<
+        string,
+        {
+          branch: string;
+          grade: string;
+          paid: number;
+          newPaid: number;
+          oldPaid: number;
+        }
+      >
     >();
     for (const r of filtered) {
       const zone = r.zone || "(No zone)";
@@ -400,17 +409,22 @@ export default function HistoricReportPage() {
         byBranch = new Map();
         zones.set(zone, byBranch);
       }
-      const cell = byBranch.get(r.branch) ?? { paid: 0, newPaid: 0, oldPaid: 0 };
+      const cellKey = `${r.branch}\u0000${r.grade}`;
+      const cell =
+        byBranch.get(cellKey) ??
+        { branch: r.branch, grade: r.grade, paid: 0, newPaid: 0, oldPaid: 0 };
       cell.paid += 1;
       if (r.student_type === "New") cell.newPaid += 1;
       else cell.oldPaid += 1;
-      byBranch.set(r.branch, cell);
+      byBranch.set(cellKey, cell);
     }
     const zoneRows = [...zones.entries()]
       .map(([zone, byBranch]) => {
-        const branches = [...byBranch.entries()]
-          .map(([b, c]) => ({ branch: b, ...c }))
-          .sort((a, b) => b.paid - a.paid || a.branch.localeCompare(b.branch));
+        const branches = [...byBranch.values()].sort(
+          (a, b) =>
+            a.branch.localeCompare(b.branch) ||
+            a.grade.localeCompare(b.grade, undefined, { numeric: true })
+        );
         const sub = branches.reduce(
           (acc, b) => ({
             paid: acc.paid + b.paid,
@@ -751,7 +765,7 @@ export default function HistoricReportPage() {
                   aria-selected={viewFormat === "paid"}
                   className={`view-switch-btn ${viewFormat === "paid" ? "active" : ""}`}
                   onClick={() => setViewFormat("paid")}
-                  title="Pivot dashboard — Zone | Branch | Paid | New | Existing"
+                  title="Pivot dashboard — Zone | Branch | Grade | Paid | New | Existing"
                 >
                   Paid Data Format
                 </button>
@@ -898,6 +912,7 @@ export default function HistoricReportPage() {
                       <th style={{ width: 44 }}>#</th>
                       <th>Zone</th>
                       <th>Branch</th>
+                      <th>Grade</th>
                       <th className="num">Paid Students</th>
                       <th className="num">New Paid</th>
                       <th className="num">Existing Paid</th>
@@ -908,7 +923,7 @@ export default function HistoricReportPage() {
                       paidPivot.zoneRows.map((z) => (
                         <Fragment key={z.zone}>
                           {z.branches.map((b, bi) => (
-                            <tr key={b.branch}>
+                            <tr key={`${b.branch}||${b.grade}`}>
                               <td className="mapping-idx">
                                 {bi === 0 ? <span className="paid-zone-first">{bi + 1}</span> : null}
                               </td>
@@ -920,6 +935,9 @@ export default function HistoricReportPage() {
                                 ) : null}
                               </td>
                               <td>{b.branch}</td>
+                              <td>
+                                <span className="grade-chip">{b.grade || "—"}</span>
+                              </td>
                               <td className="num paid-strong">{fmt(b.paid)}</td>
                               <td className="num">
                                 <span className="stype-chip new">{fmt(b.newPaid)}</span>
@@ -930,7 +948,7 @@ export default function HistoricReportPage() {
                             </tr>
                           ))}
                           <tr className="paid-subtotal">
-                            <td colSpan={2} />
+                            <td colSpan={3} />
                             <td>{z.zone} — Total</td>
                             <td className="num paid-strong">{fmt(z.sub.paid)}</td>
                             <td className="num">{fmt(z.sub.newPaid)}</td>
@@ -940,7 +958,7 @@ export default function HistoricReportPage() {
                       ))}
                     {!busy && paidPivot.zoneRows.length === 0 && (
                       <tr>
-                        <td colSpan={6} className="table-empty">
+                        <td colSpan={7} className="table-empty">
                           No students found — adjust the filters or fetch the report.
                         </td>
                       </tr>
@@ -949,7 +967,7 @@ export default function HistoricReportPage() {
                   {!busy && paidPivot.zoneRows.length > 0 && (
                     <tfoot>
                       <tr>
-                        <td colSpan={2} />
+                        <td colSpan={3} />
                         <td>Grand Total</td>
                         <td className="num paid-strong">{fmt(paidPivot.total.paid)}</td>
                         <td className="num">{fmt(paidPivot.total.newPaid)}</td>
@@ -962,7 +980,7 @@ export default function HistoricReportPage() {
               {!busy && (
                 <div className="historic-footnote">
                   Pivot of the {filtered.length.toLocaleString("en-IN")} students matching your
-                  filters · one row = one ERP first payment · counts students per branch.
+                  filters · one row = one ERP first payment · counts students per branch and grade.
                 </div>
               )}
             </>
