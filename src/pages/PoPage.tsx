@@ -9,6 +9,7 @@ import {
   type PoRow,
 } from "../poRows";
 import MultiSelect from "../components/MultiSelect";
+import { useAuth } from "../useAuth";
 import {
   AlertIcon,
   CheckCircleIcon,
@@ -56,6 +57,11 @@ function makeConfirmCode(): string {
 }
 
 export default function PoPage() {
+  const { session: authSession } = useAuth();
+  // Deleting rows (single or bulk) is admin-only; restricted accounts get view,
+  // search, filter and export only.
+  const canDelete = authSession?.isAdmin === true;
+
   const [rows, setRows] = useState<PoRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -266,8 +272,10 @@ export default function PoPage() {
 
   // ------------------------------------------------------------------
   // Delete flow: click trash → confirmation → permanent delete in Supabase
+  // (admin-only — the trash buttons/checkboxes are hidden for other accounts)
   // ------------------------------------------------------------------
   const confirmDeleteRows = async () => {
+    if (!canDelete) return; // defense in depth, mirrors the hidden UI
     if (deleteIds == null || deleteIds.length === 0) return;
     const ids = deleteIds;
     setDeleting(true);
@@ -297,7 +305,8 @@ export default function PoPage() {
   };
 
   // Changing the search/category view drops ticks that are no longer on screen,
-  // so a bulk delete always matches what the user sees.
+  // so a bulk delete always matches what the user sees. (Admins only —
+  // restricted accounts never see checkboxes, so `selected` stays empty.)
   useEffect(() => {
     setSelected(new Set());
   }, [search, category]);
@@ -717,8 +726,8 @@ export default function PoPage() {
         </div>
       </div>
 
-      {/* ------------------------------------------------ Bulk selection bar */}
-      {selected.size > 0 && (
+      {/* ------------------------------------------------ Bulk selection bar (admin only) */}
+      {canDelete && selected.size > 0 && (
         <div className="po-selection-bar">
           <span
             className="po-selection-count"
@@ -748,20 +757,22 @@ export default function PoPage() {
         <table className="data-table">
           <thead>
             <tr>
-              <th style={{ width: 38 }} className="po-check-cell">
-                <input
-                  type="checkbox"
-                  className="po-check"
-                  checked={allFilteredSelected}
-                  ref={(el) => {
-                    if (el) el.indeterminate = someFilteredSelected;
-                  }}
-                  onChange={toggleAllFiltered}
-                  disabled={loading || filtered.length === 0}
-                  aria-label="Select all rows in the current filter"
-                  title={`Select all ${filtered.length.toLocaleString("en-IN")} row(s) in the current filter`}
-                />
-              </th>
+              {canDelete && (
+                <th style={{ width: 38 }} className="po-check-cell">
+                  <input
+                    type="checkbox"
+                    className="po-check"
+                    checked={allFilteredSelected}
+                    ref={(el) => {
+                      if (el) el.indeterminate = someFilteredSelected;
+                    }}
+                    onChange={toggleAllFiltered}
+                    disabled={loading || filtered.length === 0}
+                    aria-label="Select all rows in the current filter"
+                    title={`Select all ${filtered.length.toLocaleString("en-IN")} row(s) in the current filter`}
+                  />
+                </th>
+              )}
               <th style={{ width: 44 }}>#</th>
               {COLUMNS.map((c) => (
                 <th key={String(c.key)}>{c.label}</th>
@@ -778,15 +789,17 @@ export default function PoPage() {
                     key={r.id}
                     className={`${editing ? "po-editing" : ""}${selected.has(r.id) ? " po-selected" : ""}`}
                   >
-                    <td className="po-check-cell">
-                      <input
-                        type="checkbox"
-                        className="po-check"
-                        checked={selected.has(r.id)}
-                        onChange={() => toggleRow(r.id)}
-                        aria-label={`Select row ${i + 1} (${r.sku_code || r.material_name || "no SKU"})`}
-                      />
-                    </td>
+                    {canDelete && (
+                      <td className="po-check-cell">
+                        <input
+                          type="checkbox"
+                          className="po-check"
+                          checked={selected.has(r.id)}
+                          onChange={() => toggleRow(r.id)}
+                          aria-label={`Select row ${i + 1} (${r.sku_code || r.material_name || "no SKU"})`}
+                        />
+                      </td>
+                    )}
                     <td className="mapping-idx">{i + 1}</td>
                     {COLUMNS.map((c) => (
                       <td key={String(c.key)}>
@@ -830,17 +843,19 @@ export default function PoPage() {
                           >
                             <PencilIcon size={13} />
                           </button>
-                          <button
-                            className="btn danger po-row-btn"
-                            onClick={() => {
-                              setRowError(null);
-                              setRowNotice(null);
-                              setDeleteIds([r.id]);
-                            }}
-                            title="Delete this row permanently from the database"
-                          >
-                            <TrashIcon size={13} />
-                          </button>
+                          {canDelete && (
+                            <button
+                              className="btn danger po-row-btn"
+                              onClick={() => {
+                                setRowError(null);
+                                setRowNotice(null);
+                                setDeleteIds([r.id]);
+                              }}
+                              title="Delete this row permanently from the database"
+                            >
+                              <TrashIcon size={13} />
+                            </button>
+                          )}
                         </div>
                       )}
                     </td>
@@ -849,7 +864,7 @@ export default function PoPage() {
               })}
             {!loading && filtered.length === 0 && (
               <tr>
-                <td colSpan={10} className="table-empty">
+                <td colSpan={canDelete ? 10 : 9} className="table-empty">
                   {rows.length === 0
                     ? "No PO data yet — upload the PO Excel above to get started."
                     : "No rows match your search."}
@@ -860,7 +875,7 @@ export default function PoPage() {
           {!loading && filtered.length > 0 && (
             <tfoot>
               <tr>
-                <td colSpan={7}>Total ({filtered.length.toLocaleString("en-IN")} rows)</td>
+                <td colSpan={canDelete ? 7 : 6}>Total ({filtered.length.toLocaleString("en-IN")} rows)</td>
                 <td className="num">{fmtNum(totals.stock)}</td>
                 <td className="num">{fmtNum(totals.qty)}</td>
                 <td />
@@ -891,7 +906,12 @@ export default function PoPage() {
       )}
 
       <div className="historic-footnote">
-        Upload replaces or appends PO rows · edit or delete any row with confirmation · {rows.length === 0 && "run scripts/migration-po-rows.sql in Supabase if the table is missing."}
+        Upload replaces or appends PO rows ·{" "}
+        {canDelete
+          ? "edit or delete any row with confirmation"
+          : "edit any row with confirmation — deleting rows is admin-only"}
+        {" · "}
+        {rows.length === 0 && "run scripts/migration-po-rows.sql in Supabase if the table is missing."}
       </div>
     </div>
   );
