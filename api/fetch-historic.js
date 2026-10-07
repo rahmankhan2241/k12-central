@@ -5,6 +5,11 @@
  *  - Vercel Cron daily at 02:30 UTC (8:00 AM IST) — 26-27 (current session)
  *  - Manual "Fetch Now" from the Historic Report page (?report=payment&year=YYYY-YY)
  *
+ * NOT publicly callable: requests must either carry the cron bearer secret
+ * (Authorization: Bearer $CRON_SECRET, attached automatically by Vercel Cron)
+ * or originate from the app itself (Origin/Referer allowlist — see
+ * ALLOWED_ORIGINS below). Everyone else gets 401/403.
+ *
  * Academic years: the UI selects 2024-25 / 2025-26 / 2026-27; each maps to a
  * different Eduvate finance_session_year_id and report date (see SESSIONS).
  *
@@ -23,14 +28,16 @@
  * Snapshot replacement is insert-first, delete-second, scoped to the year:
  *  - every inserted row is stamped with this run's fetched_at + session_year
  *  - after all inserts succeed, that year's old rows are removed with a SINGLE
- *    `fetched_at=neq.<ts>&session_year=eq.<year>` delete
+ *    `fetched_at=lt.<ts>&session_year=eq.<year>` delete (only generations
+ *    OLDER than this run — concurrent runs can never wipe each other's rows)
  *  - if anything fails before the delete, the old snapshot stays intact
  *
  * Zone is NOT stored here — the UI joins it live from the Branch & ZBH
  * mapping (Branch (Eduvate) lookup) so Add/Skip is instant.
  *
  * Env vars: EDUVATE_USERNAME, EDUVATE_PASSWORD, SUPABASE_URL,
- * SUPABASE_SERVICE_KEY (or SUPABASE_SERVICE_ROLE_KEY).
+ * SUPABASE_SERVICE_KEY (or SUPABASE_SERVICE_ROLE_KEY), CRON_SECRET
+ * (locks the scheduled cron behind Vercel's automatic bearer token).
  */
 
 const FINANCE_BASE = "https://orchids.finance.letseduvate.com/qbox/apiV1";
@@ -59,6 +66,44 @@ const DEFAULT_YEAR = "2026-27";
  * returned to the UI by a plain read, never re-fetched from Eduvate).
  */
 const FROZEN_YEARS = new Set(["2025-26", "2024-25"]);
+
+/**
+ * Access control — who may call this endpoint:
+ *  1. Bearer `Authorization: Bearer $CRON_SECRET` — Vercel Cron attaches it
+ *     automatically once CRON_SECRET is set on the project; also usable for
+ *     authorized manual CLI runs.
+ *  2. The app itself — a same-origin browser fetch. Browsers send Origin
+ *     (cross-origin requests) or Referer (same-origin GETs); the origin must
+ *     be the production domain or localhost (dev). Preview deployments are
+ *     NOT allowlisted — add them to ALLOWED_ORIGINS if Fetch Now is ever
+ *     needed on a preview URL.
+ * Everyone else (shared links, scanners, cross-site pages) is rejected.
+ */
+const ALLOWED_ORIGINS = new Set(["https://k12-central.vercel.app"]);
+
+/** Best-effort caller origin: Origin header (cross-origin) else Referer origin. */
+function requestOrigin(req) {
+  const origin = req.headers.origin;
+  if (typeof origin === "string" && origin) {
+    try { return new URL(origin).origin; } catch { /* malformed — try Referer */ }
+  }
+  const referer = req.headers.referer;
+  if (typeof referer === "string" && referer) {
+    try { return new URL(referer).origin; } catch { /* malformed */ }
+  }
+  return "";
+}
+
+/** True when the caller's origin is the app (production or local dev). */
+function isAllowedOrigin(origin) {
+  if (ALLOWED_ORIGINS.has(origin)) return true;
+  try {
+    const host = new URL(origin).hostname;
+    return host === "localhost" || host === "127.0.0.1" || host === "[::1]";
+  } catch {
+    return false;
+  }
+}
 
 // ---------- tiny CSV parser (no deps) ----------
 function parseCsv(text) {
@@ -268,9 +313,15 @@ async function supabaseHasSessionYearColumn(supabaseUrl, serviceKey) {
   return !(res.status === 400 && (body.includes("42703") || body.includes("session_year")));
 }
 
-/** Remove every row from a previous run in ONE request via fetched_at=neq.<ts>. */
+/**
+ * Remove every row from previous runs of THIS year in ONE request via
+ * fetched_at=lt.<ts> — only generations OLDER than this run. lt (not neq) so
+ * two concurrent runs can never delete each other's rows: the newer
+ * generation always survives, and the worst a race can leave is a duplicate
+ * generation that the next successful run cleans up.
+ */
 async function supabaseDeleteOldGeneration(supabaseUrl, serviceKey, table, fetchedAt, sessionYear) {
-  let qs = `fetched_at=neq.${encodeURIComponent(fetchedAt)}`;
+  let qs = `fetched_at=lt.${encodeURIComponent(fetchedAt)}`;
   if (sessionYear) qs += `&session_year=eq.${encodeURIComponent(sessionYear)}`;
   const res = await fetch(
     `${supabaseUrl}/rest/v1/${table}?${qs}`,
@@ -335,22 +386,45 @@ export default async function handler(req, res) {
   const username = process.env.EDUVATE_USERNAME;
   const password = process.env.EDUVATE_PASSWORD;
 
+  // Only the app's own origin gets CORS headers; same-origin calls ignore
+  // them, and cross-site callers are rejected outright below.
+  const callerOrigin = requestOrigin(req);
+  const originOk = isAllowedOrigin(callerOrigin);
   const cors = {
-    "Access-Control-Allow-Origin": "*",
+    ...(originOk ? { "Access-Control-Allow-Origin": callerOrigin } : {}),
     "Access-Control-Allow-Methods": "GET,OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type",
   };
   if (req.method === "OPTIONS") { res.writeHead(204, cors); return res.end(); }
+  if (req.method !== "GET") {
+    res.writeHead(405, { ...cors, Allow: "GET,OPTIONS" });
+    return res.end(JSON.stringify({ error: "Method not allowed" }));
+  }
 
   try {
     if (!serviceKey) throw new Error("SUPABASE_SERVICE_KEY env var is not set");
     if (!username || !password) throw new Error("EDUVATE_USERNAME / EDUVATE_PASSWORD env vars are not set");
 
     const authHeader = req.headers.authorization || "";
+    const cronSecret = process.env.CRON_SECRET;
     const isVercelCron = req.headers["x-vercel-cron"] !== undefined;
-    if (isVercelCron && process.env.CRON_SECRET && authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
-      res.writeHead(401, cors);
-      return res.end(JSON.stringify({ error: "Unauthorized cron call" }));
+    if (cronSecret && authHeader === `Bearer ${cronSecret}`) {
+      // Valid bearer token: Vercel Cron (it attaches it automatically) or an
+      // authorized manual call. Nothing else to check.
+    } else if (isVercelCron) {
+      if (cronSecret) {
+        res.writeHead(401, cors);
+        return res.end(JSON.stringify({ error: "Unauthorized cron call — missing or wrong Authorization bearer token" }));
+      }
+      // CRON_SECRET is not configured on the project yet: pass the claimed
+      // scheduler call through so the nightly cron keeps working. Lock it
+      // down by adding CRON_SECRET in Vercel → Settings → Environment
+      // Variables — the next deploy then enforces the bearer token.
+    } else if (!originOk) {
+      res.writeHead(403, cors);
+      return res.end(JSON.stringify({
+        error: "Forbidden — /api/fetch-historic is only callable by the app or Vercel Cron",
+      }));
     }
 
     // Academic year from ?year= (validated) — used for source session, row
